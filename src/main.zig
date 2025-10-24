@@ -1,9 +1,20 @@
 const std = @import("std");
 const c = @cImport({
     @cInclude("git2.h");
+    @cInclude("ncurses.h");
 });
 
 pub fn main() !void {
+    _ = c.initscr();
+    defer _ = c.endwin();
+    _ = c.cbreak();
+    _ = c.noecho();
+    _ = c.keypad(c.stdscr, true);
+    _ = c.printw("Hello, ncurses!\n");
+    _ = c.printw("Press any key to continue!");
+    _ = c.refresh();
+    _ = c.getch();
+
     try wrap_git_call(c.git_libgit2_init());
     defer _ = c.git_libgit2_shutdown();
 
@@ -24,8 +35,7 @@ pub fn main() !void {
     const status_list_entry_count = c.git_status_list_entrycount(status_list);
     std.debug.print("Printing {d} entries\n", .{status_list_entry_count});
     for (0..status_list_entry_count) |i| {
-        const status_entry = c.git_status_byindex(status_list, i);
-        std.debug.print("{s}\n", .{status_entry.*.head_to_index.*.new_file.path});
+        _ = i;
     }
 }
 
