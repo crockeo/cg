@@ -5,37 +5,78 @@ const c = @cImport({
     @cInclude("string.h");
 });
 
+const err = @import("err.zig");
+const git = @import("git.zig");
+
 pub fn main() !void {
-    try wrap_git_call(c.git_libgit2_init());
-    defer _ = c.git_libgit2_shutdown();
+    const lib = try git.Lib.init();
+    defer lib.deinit() catch {};
 
-    _ = c.initscr();
-    defer _ = c.endwin();
-
-    _ = c.cbreak();
-    _ = c.noecho();
-    _ = c.keypad(c.stdscr, true);
-
-    var repo = try GitRepo.init("./.git");
+    const repo = try lib.open_repo("./");
     defer repo.deinit();
 
-    const opts = c.git_status_options{
-        .flags = c.GIT_STATUS_OPT_INCLUDE_UNTRACKED,
-        .show = c.GIT_STATUS_SHOW_INDEX_AND_WORKDIR,
-        .version = c.GIT_STATUS_OPTIONS_VERSION,
-    };
+    const status = try repo.status();
+    defer status.deinit();
 
-    var status_iter = try repo.status_list(&opts);
-    _ = c.printw("%d entries\n", status_iter.len());
-    while (status_iter.next()) |status_entry| {
-        _ = c.printw("%d\n", status_entry.*.status);
-        // _ = c.printw(status_entry.);
+    var iter = status.iter();
+    while (try iter.next()) |entry| {
+        std.debug.print("{any}\n", .{entry});
+        if (entry.head_to_index()) |head_to_index| {
+            _ = head_to_index;
+        }
+        if (entry.index_to_workdir()) |index_to_workdir| {
+            _ = index_to_workdir;
+        }
     }
 
-    _ = c.printw("Hello, ncurses!\n");
-    _ = c.printw("Press any key to continue!");
-    _ = c.refresh();
-    _ = c.getch();
+    // try err.wrap_git(c.git_libgit2_init());
+    // defer _ = c.git_libgit2_shutdown();
+
+    // var repo = try GitRepo.init("../../core");
+    // defer repo.deinit();
+
+    // const opts = c.git_status_options{
+    //     .flags = c.GIT_STATUS_OPT_INCLUDE_UNTRACKED,
+    //     .show = c.GIT_STATUS_SHOW_INDEX_AND_WORKDIR,
+    //     .version = c.GIT_STATUS_OPTIONS_VERSION,
+    // };
+
+    // var status_iter = try repo.status_list(&opts);
+    // std.debug.print("Found {d} entries:\n", .{status_iter.len()});
+    // while (status_iter.next()) |status_entry| {
+    //     const path = blk: {
+    //         if (status_entry.*.index_to_workdir) |index_to_workdir| {
+    //             break :blk index_to_workdir.*.new_file.path;
+    //         }
+    //         if (status_entry.*.head_to_index) |head_to_index| {
+    //             break :blk head_to_index.*.new_file.path;
+    //         }
+    //         @panic("Unknown situation");
+    //     };
+    //     const is_staged = blk: {
+    //         if (status_entry.*.index_to_workdir != null) {
+    //             break :blk "Staged";
+    //         }
+    //         if (status_entry.*.head_to_index != null) {
+    //             break :blk "Unstaged";
+    //         }
+    //         @panic("Unknown situation");
+    //     };
+    //     const status = blk: {
+    //         if (status_entry.*.index_to_workdir) |index_to_workdir| {
+    //             const delta: GitDelta = @enumFromInt(index_to_workdir.*.status);
+    //             break :blk delta.name();
+    //         }
+    //         if (status_entry.*.head_to_index) |head_to_index| {
+    //             const delta: GitDelta = @enumFromInt(head_to_index.*.status);
+    //             break :blk delta.name();
+    //         }
+    //         @panic("Unknown situation");
+    //     };
+    //     std.debug.print("{s} {s} {s}\n", .{ path, is_staged, status });
+
+    //     // std.debug.print("{any}\n", .{GitStatus.from_git_status_t(status_entry.*.status)});
+    // }
 }
 
 const GitRepo = struct {
@@ -43,9 +84,9 @@ const GitRepo = struct {
 
     repository: ?*c.git_repository,
 
-    pub fn init(path: [*c]const u8) GitError!Self {
+    pub fn init(path: [*c]const u8) err.GitError!Self {
         var self: Self = undefined;
-        try wrap_git_call(c.git_repository_open(&self.repository, path));
+        try err.wrap_git(c.git_repository_open(&self.repository, path));
         return self;
     }
 
@@ -53,14 +94,14 @@ const GitRepo = struct {
         c.git_repository_free(self.repository);
     }
 
-    pub fn status_list(self: *Self, opts: *const c.git_status_options) GitError!GitRepoStatusIterator {
+    pub fn status_list(self: *Self, opts: *const c.git_status_options) err.GitError!GitRepoStatusIterator {
         var iter = GitRepoStatusIterator{
             .count = undefined,
             .index = 0,
             .opts = opts,
             .status_list = undefined,
         };
-        try wrap_git_call(c.git_status_list_new(
+        try err.wrap_git(c.git_status_list_new(
             &iter.status_list,
             self.repository,
             opts,
@@ -98,111 +139,65 @@ const GitRepoStatusIterator = struct {
 ///
 /// Taken from https://libgit2.org/docs/reference/main/status/git_status_t.html
 const GitStatus = packed struct {
+    const Self = @This();
+
     status_index_new: bool,
     status_index_modified: bool,
     status_index_deleted: bool,
     status_index_renamed: bool,
     status_index_typechange: bool,
     _padding1: u2 = 0,
-    status_wt_new: bool,
-    status_wt_modified: bool,
-    status_wt_deleted: bool,
-    status_wt_typechange: bool,
-    status_wt_renamed: bool,
-    status_wt_unreadable: bool,
+    status_worktree_new: bool,
+    status_worktree_modified: bool,
+    status_worktree_deleted: bool,
+    status_worktree_typechange: bool,
+    status_worktree_renamed: bool,
+    status_worktree_unreadable: bool,
     _padding2: u1 = 0,
     status_ignored: bool,
     status_conflicted: bool,
+    _padding3: u16 = 0,
 
     pub fn from_git_status_t(git_status: c.git_status_t) GitStatus {
         return @bitCast(git_status);
     }
+
+    pub fn is_staged(self: Self) bool {
+        _ = self;
+        return false;
+    }
+
+    pub fn is_untracked(self: Self) bool {
+        return self.status_worktree_new;
+    }
 };
 
-/// Set of possible error codes produced from libgit2.
-///
-/// Taken from: https://libgit2.org/docs/reference/main/errors/git_error_code.html
-const GitError = error{
-    GenericError,
-    NotFound,
-    Exists,
-    Ambiguous,
-    Bufs,
-    User,
-    BareRepo,
-    UnbornBranch,
-    Unmerged,
-    NonFastForward,
-    InvalidSpec,
-    Conflict,
-    Locked,
-    Modified,
-    Auth,
-    Certificate,
-    Applied,
-    Peel,
-    EOF,
-    Invalid,
-    Uncommitted,
-    Directory,
-    MergeConflict,
-    Passthrough,
-    IterOver,
-    Retry,
-    Mismatch,
-    IndexDirty,
-    ApplyFail,
-    Owner,
-    Timeout,
-    Unchanged,
-    NotSupported,
-    ReadOnly,
-    Unknown,
-};
+const GitDelta = enum(c_uint) {
+    Unmodified = 0,
+    Added = 1,
+    Deleted = 2,
+    Modified = 3,
+    Renamed = 4,
+    Copied = 5,
+    Ignored = 6,
+    Untracked = 7,
+    TypeChange = 8,
+    Unreadable = 9,
+    Conflicted = 10,
 
-/// Wraps a call into libgit2 which produces an error code
-/// and maps it onto a [GitError].
-///
-/// Taken from: https://libgit2.org/docs/reference/main/errors/git_error_code.html
-fn wrap_git_call(error_code: c_int) GitError!void {
-    if (error_code >= 0) {
-        return;
+    pub fn name(self: GitDelta) []const u8 {
+        switch (self) {
+            .Unmodified => return "Unmodified",
+            .Added => return "Added",
+            .Deleted => return "Deleted",
+            .Modified => return "Modified",
+            .Renamed => return "Renamed",
+            .Copied => return "Copied",
+            .Ignored => return "Ignored",
+            .Untracked => return "Untracked",
+            .TypeChange => return "TypeChange",
+            .Unreadable => return "Unreadable",
+            .Conflicted => return "Conflicted",
+        }
     }
-    switch (error_code) {
-        -1 => return error.GenericError,
-        -3 => return error.NotFound,
-        -4 => return error.Exists,
-        -5 => return error.Ambiguous,
-        -6 => return error.Bufs,
-        -7 => return error.User,
-        -8 => return error.BareRepo,
-        -9 => return error.UnbornBranch,
-        -10 => return error.Unmerged,
-        -11 => return error.NonFastForward,
-        -12 => return error.InvalidSpec,
-        -13 => return error.Conflict,
-        -14 => return error.Locked,
-        -15 => return error.Modified,
-        -16 => return error.Auth,
-        -17 => return error.Certificate,
-        -18 => return error.Applied,
-        -19 => return error.Peel,
-        -20 => return error.EOF,
-        -21 => return error.Invalid,
-        -22 => return error.Uncommitted,
-        -23 => return error.Directory,
-        -24 => return error.MergeConflict,
-        -30 => return error.Passthrough,
-        -31 => return error.IterOver,
-        -32 => return error.Retry,
-        -33 => return error.Mismatch,
-        -34 => return error.IndexDirty,
-        -35 => return error.ApplyFail,
-        -36 => return error.Owner,
-        -37 => return error.Timeout,
-        -38 => return error.Unchanged,
-        -39 => return error.NotSupported,
-        -40 => return error.ReadOnly,
-        {} => return error.Unknown,
-    }
-}
+};
