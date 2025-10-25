@@ -22,6 +22,7 @@ pub const Interface = struct {
         try err.wrap_curses(c.cbreak());
         try err.wrap_curses(c.noecho());
         try err.wrap_curses(c.keypad(window, true));
+        try Color.init();
 
         return .{
             .repo = repo,
@@ -72,7 +73,10 @@ pub const Interface = struct {
         try err.wrap_curses(c.printw("> Head:     SHA1 branch commit message\n\n"));
 
         if (untracked.items.len > 0) {
-            try err.wrap_curses(c.printw("v Untracked files (%d)\n", untracked.items.len));
+            try print("v ", .{});
+            try print("Untracked files", .{ .bold = true, .color = .section_header });
+            try print(" (num)\n", .{});
+
             for (untracked.items) |diff_delta| {
                 try err.wrap_curses(c.printw("> %s\n", diff_delta.diff_delta.*.new_file.path));
             }
@@ -106,3 +110,45 @@ pub const Interface = struct {
         ));
     }
 };
+
+const Color = enum(c_int) {
+    section_header = 1,
+
+    fn init() err.CursesError!void {
+        try err.wrap_curses(c.start_color());
+        try err.wrap_curses(c.use_default_colors());
+        try err.wrap_curses(c.init_pair(@intFromEnum(Color.section_header), c.COLOR_MAGENTA, -1));
+    }
+
+    fn attron(self: Color) err.CursesError!void {
+        try err.wrap_curses(c.attron(c.COLOR_PAIR(@intFromEnum(self))));
+    }
+
+    fn attroff(self: Color) err.CursesError!void {
+        try err.wrap_curses(c.attroff(c.COLOR_PAIR(@intFromEnum(self))));
+    }
+};
+
+const PrintOptions = struct {
+    bold: bool = false,
+    color: ?Color = null,
+};
+
+fn print(contents: [*c]const u8, options: PrintOptions) err.CursesError!void {
+    if (options.bold) {
+        try err.wrap_curses(c.attron(c.A_BOLD));
+    }
+    if (options.color) |color| {
+        try err.wrap_curses(c.attron(c.COLOR_PAIR(@intFromEnum(color))));
+    }
+
+    // TODO: how to pass args?
+    try err.wrap_curses(c.printw(contents));
+
+    if (options.color) |color| {
+        try err.wrap_curses(c.attroff(c.COLOR_PAIR(@intFromEnum(color))));
+    }
+    if (options.bold) {
+        try err.wrap_curses(c.attroff(c.A_BOLD));
+    }
+}
