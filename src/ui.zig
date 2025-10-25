@@ -70,12 +70,12 @@ pub const Interface = struct {
         }
 
         // TODO: actually get the SHA of the root, and the commit message
-        try err.wrap_curses(c.printw("> Head:     SHA1 branch commit message\n\n"));
+        try Printer.print("> Head:     SHA1 branch commit message\n\n", .{}, .{});
 
         if (untracked.items.len > 0) {
-            try print("v ", .{});
-            try print("Untracked files", .{ .bold = true, .color = .section_header });
-            try print(" (num)\n", .{});
+            try Printer.print("v ", .{}, .{});
+            try Printer.print("Untracked files", .{ .bold = true, .color = .section_header }, .{});
+            try Printer.print(" ({d})\n", .{}, .{untracked.items.len});
 
             for (untracked.items) |diff_delta| {
                 try err.wrap_curses(c.printw("> %s\n", diff_delta.diff_delta.*.new_file.path));
@@ -152,3 +152,57 @@ fn print(contents: [*c]const u8, options: PrintOptions) err.CursesError!void {
         try err.wrap_curses(c.attroff(c.A_BOLD));
     }
 }
+
+const Printer = struct {
+    fn print(comptime fmt: []const u8, options: PrintOptions, args: anytype) Error!void {
+        if (options.bold) {
+            try err.wrap_curses(c.attron(c.A_BOLD));
+        }
+        if (options.color) |color| {
+            try err.wrap_curses(c.attron(c.COLOR_PAIR(@intFromEnum(color))));
+        }
+
+        try writer.print(fmt, args);
+
+        if (options.color) |color| {
+            try err.wrap_curses(c.attroff(c.COLOR_PAIR(@intFromEnum(color))));
+        }
+        if (options.bold) {
+            try err.wrap_curses(c.attroff(c.A_BOLD));
+        }
+    }
+
+    // ... all of this is just implementation details,
+    // which allow us to treat ncurses output as if
+    // it were just a normal Zig std.io.Writer.
+    const Error = error{WriteFailed} || err.CursesError;
+
+    const vtable = std.io.Writer.VTable{
+        .drain = drain,
+    };
+
+    var writer = std.io.Writer{
+        .buffer = &.{},
+        .vtable = &vtable,
+    };
+
+    fn drain(_: *std.io.Writer, data: []const []const u8, splat: usize) error{WriteFailed}!usize {
+        // TODO: to be a Good(tm) writer, I need to do something with `splat`.
+        // Not thinking about that for now.
+        _ = splat;
+
+        var written: usize = 0;
+        for (data) |slice| {
+            const ret = c.addnstr(
+                @ptrCast(@alignCast(slice.ptr)),
+                @intCast(slice.len),
+            );
+            if (ret == c.ERR) {
+                return error.WriteFailed;
+            }
+            written += slice.len;
+        }
+
+        return written;
+    }
+};
