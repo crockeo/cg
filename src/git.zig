@@ -121,5 +121,41 @@ pub const StatusEntry = struct {
 };
 
 pub const DiffDelta = struct {
+    const Self = @This();
+
     diff_delta: [*c]const c.git_diff_delta,
+
+    pub fn status(self: Self) Status {
+        return @enumFromInt(self.diff_delta.*.status);
+    }
+
+    pub const Status = enum(c_uint) {
+        Unmodified = 0,
+        Added = 1,
+        Deleted = 2,
+        Modified = 3,
+        Renamed = 4,
+        Copied = 5,
+        Ignored = 6,
+        Untracked = 7,
+        TypeChange = 8,
+        Unreadable = 9,
+        Conflicted = 10,
+
+        pub fn name(self: Status) []const u8 {
+            switch (self) {
+                .Unmodified => return "Unmodified",
+                .Added => return "Added",
+                .Deleted => return "Deleted",
+                .Modified => return "Modified",
+                .Renamed => return "Renamed",
+                .Copied => return "Copied",
+                .Ignored => return "Ignored",
+                .Untracked => return "Untracked",
+                .TypeChange => return "TypeChange",
+                .Unreadable => return "Unreadable",
+                .Conflicted => return "Conflicted",
+            }
+        }
+    };
 };

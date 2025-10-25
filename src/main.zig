@@ -22,10 +22,10 @@ pub fn main() !void {
     while (try iter.next()) |entry| {
         std.debug.print("{any}\n", .{entry});
         if (entry.head_to_index()) |head_to_index| {
-            _ = head_to_index;
+            std.debug.print("  head_to_index {s}\n", .{head_to_index.status().name()});
         }
         if (entry.index_to_workdir()) |index_to_workdir| {
-            _ = index_to_workdir;
+            std.debug.print("  index_to_workdir {s}\n", .{index_to_workdir.status().name()});
         }
     }
 
@@ -169,35 +169,5 @@ const GitStatus = packed struct {
 
     pub fn is_untracked(self: Self) bool {
         return self.status_worktree_new;
-    }
-};
-
-const GitDelta = enum(c_uint) {
-    Unmodified = 0,
-    Added = 1,
-    Deleted = 2,
-    Modified = 3,
-    Renamed = 4,
-    Copied = 5,
-    Ignored = 6,
-    Untracked = 7,
-    TypeChange = 8,
-    Unreadable = 9,
-    Conflicted = 10,
-
-    pub fn name(self: GitDelta) []const u8 {
-        switch (self) {
-            .Unmodified => return "Unmodified",
-            .Added => return "Added",
-            .Deleted => return "Deleted",
-            .Modified => return "Modified",
-            .Renamed => return "Renamed",
-            .Copied => return "Copied",
-            .Ignored => return "Ignored",
-            .Untracked => return "Untracked",
-            .TypeChange => return "TypeChange",
-            .Unreadable => return "Unreadable",
-            .Conflicted => return "Conflicted",
-        }
     }
 };
