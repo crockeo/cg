@@ -7,6 +7,7 @@ const c = @cImport({
 
 const err = @import("err.zig");
 const git = @import("git.zig");
+const ui = @import("ui.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -19,60 +20,13 @@ pub fn main() !void {
     const repo = try lib.open_repo("./");
     defer repo.deinit();
 
-    const status = try repo.status();
-    defer status.deinit();
+    var interface = try ui.Interface.init(repo);
+    defer interface.deinit();
 
-    var staged = std.ArrayList(git.DiffDelta).empty;
-    defer staged.deinit(allocator);
-
-    var unstaged = std.ArrayList(git.DiffDelta).empty;
-    defer unstaged.deinit(allocator);
-
-    var untracked = std.ArrayList(git.DiffDelta).empty;
-    defer untracked.deinit(allocator);
-
-    var iter = status.iter();
-    while (try iter.next()) |entry| {
-        if (entry.staged()) |staged_diff| {
-            try staged.append(allocator, staged_diff);
-        }
-        if (entry.unstaged()) |unstaged_diff| {
-            if (unstaged_diff.status() == .Untracked) {
-                try untracked.append(allocator, unstaged_diff);
-            } else {
-                try unstaged.append(allocator, unstaged_diff);
-            }
-        }
+    while (true) {
+        try interface.paint(allocator);
+        interface.handle_input();
     }
-
-    // TODO:
-    std.debug.print("> Head:     SHA1 branch commit message\n\n", .{});
-
-    if (untracked.items.len > 0) {
-        std.debug.print("v Untracked files ({d})\n", .{untracked.items.len});
-        for (untracked.items) |diff_delta| {
-            std.debug.print("> {s}\n", .{diff_delta.diff_delta.*.new_file.path});
-        }
-        std.debug.print("\n", .{});
-    }
-
-    if (unstaged.items.len > 0) {
-        std.debug.print("v Unstaged changes ({d})\n", .{unstaged.items.len});
-        for (unstaged.items) |diff_delta| {
-            std.debug.print("> {s}   {s}\n", .{ diff_delta.status().name(), diff_delta.diff_delta.*.new_file.path });
-        }
-        std.debug.print("\n", .{});
-    }
-
-    if (staged.items.len > 0) {
-        std.debug.print("v Staged changes ({d})\n", .{staged.items.len});
-        for (staged.items) |diff_delta| {
-            std.debug.print("> {s}   {s}\n", .{ diff_delta.status().name(), diff_delta.diff_delta.*.new_file.path });
-        }
-        std.debug.print("\n", .{});
-    }
-
-    std.debug.print("> Recent commits\n", .{});
 }
 
 const GitRepo = struct {

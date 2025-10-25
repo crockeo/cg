@@ -1,3 +1,17 @@
+const c = @cImport({
+    @cInclude("curses.h");
+});
+
+pub const CursesError = error{
+    CursesError,
+};
+
+pub fn wrap_curses(error_code: c_int) CursesError!void {
+    if (error_code == c.ERR) {
+        return CursesError.CursesError;
+    }
+}
+
 /// Set of possible error codes produced from libgit2.
 ///
 /// Taken from: https://libgit2.org/docs/reference/main/errors/git_error_code.html

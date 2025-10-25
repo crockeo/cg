@@ -142,19 +142,19 @@ pub const DiffDelta = struct {
         Unreadable = 9,
         Conflicted = 10,
 
-        pub fn name(self: Status) []const u8 {
+        pub fn name(self: Status) [:0]const u8 {
             switch (self) {
-                .Unmodified => return "Unmodified",
-                .Added => return "Added",
-                .Deleted => return "Deleted",
-                .Modified => return "Modified",
-                .Renamed => return "Renamed",
-                .Copied => return "Copied",
-                .Ignored => return "Ignored",
-                .Untracked => return "Untracked",
-                .TypeChange => return "TypeChange",
-                .Unreadable => return "Unreadable",
-                .Conflicted => return "Conflicted",
+                .Unmodified => return "unmodified",
+                .Added => return "added",
+                .Deleted => return "deleted",
+                .Modified => return "modified",
+                .Renamed => return "renamed",
+                .Copied => return "copied",
+                .Ignored => return "ignored",
+                .Untracked => return "untracked",
+                .TypeChange => return "typechange",
+                .Unreadable => return "unreadable",
+                .Conflicted => return "conflicted",
             }
         }
     };
