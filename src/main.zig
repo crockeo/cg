@@ -9,6 +9,10 @@ const err = @import("err.zig");
 const git = @import("git.zig");
 
 pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
     const lib = try git.Lib.init();
     defer lib.deinit() catch {};
 
@@ -18,65 +22,57 @@ pub fn main() !void {
     const status = try repo.status();
     defer status.deinit();
 
+    var staged = std.ArrayList(git.DiffDelta).empty;
+    defer staged.deinit(allocator);
+
+    var unstaged = std.ArrayList(git.DiffDelta).empty;
+    defer unstaged.deinit(allocator);
+
+    var untracked = std.ArrayList(git.DiffDelta).empty;
+    defer untracked.deinit(allocator);
+
     var iter = status.iter();
     while (try iter.next()) |entry| {
-        std.debug.print("{any}\n", .{entry});
-        if (entry.head_to_index()) |head_to_index| {
-            std.debug.print("  head_to_index {s}\n", .{head_to_index.status().name()});
+        if (entry.staged()) |staged_diff| {
+            try staged.append(allocator, staged_diff);
         }
-        if (entry.index_to_workdir()) |index_to_workdir| {
-            std.debug.print("  index_to_workdir {s}\n", .{index_to_workdir.status().name()});
+        if (entry.unstaged()) |unstaged_diff| {
+            if (unstaged_diff.status() == .Untracked) {
+                try untracked.append(allocator, unstaged_diff);
+            } else {
+                try unstaged.append(allocator, unstaged_diff);
+            }
         }
     }
 
-    // try err.wrap_git(c.git_libgit2_init());
-    // defer _ = c.git_libgit2_shutdown();
+    // TODO:
+    std.debug.print("> Head:     SHA1 branch commit message\n\n", .{});
 
-    // var repo = try GitRepo.init("../../core");
-    // defer repo.deinit();
+    if (untracked.items.len > 0) {
+        std.debug.print("v Untracked files ({d})\n", .{untracked.items.len});
+        for (untracked.items) |diff_delta| {
+            std.debug.print("> {s}\n", .{diff_delta.diff_delta.*.new_file.path});
+        }
+        std.debug.print("\n", .{});
+    }
 
-    // const opts = c.git_status_options{
-    //     .flags = c.GIT_STATUS_OPT_INCLUDE_UNTRACKED,
-    //     .show = c.GIT_STATUS_SHOW_INDEX_AND_WORKDIR,
-    //     .version = c.GIT_STATUS_OPTIONS_VERSION,
-    // };
+    if (unstaged.items.len > 0) {
+        std.debug.print("v Unstaged changes ({d})\n", .{unstaged.items.len});
+        for (unstaged.items) |diff_delta| {
+            std.debug.print("> {s}   {s}\n", .{ diff_delta.status().name(), diff_delta.diff_delta.*.new_file.path });
+        }
+        std.debug.print("\n", .{});
+    }
 
-    // var status_iter = try repo.status_list(&opts);
-    // std.debug.print("Found {d} entries:\n", .{status_iter.len()});
-    // while (status_iter.next()) |status_entry| {
-    //     const path = blk: {
-    //         if (status_entry.*.index_to_workdir) |index_to_workdir| {
-    //             break :blk index_to_workdir.*.new_file.path;
-    //         }
-    //         if (status_entry.*.head_to_index) |head_to_index| {
-    //             break :blk head_to_index.*.new_file.path;
-    //         }
-    //         @panic("Unknown situation");
-    //     };
-    //     const is_staged = blk: {
-    //         if (status_entry.*.index_to_workdir != null) {
-    //             break :blk "Staged";
-    //         }
-    //         if (status_entry.*.head_to_index != null) {
-    //             break :blk "Unstaged";
-    //         }
-    //         @panic("Unknown situation");
-    //     };
-    //     const status = blk: {
-    //         if (status_entry.*.index_to_workdir) |index_to_workdir| {
-    //             const delta: GitDelta = @enumFromInt(index_to_workdir.*.status);
-    //             break :blk delta.name();
-    //         }
-    //         if (status_entry.*.head_to_index) |head_to_index| {
-    //             const delta: GitDelta = @enumFromInt(head_to_index.*.status);
-    //             break :blk delta.name();
-    //         }
-    //         @panic("Unknown situation");
-    //     };
-    //     std.debug.print("{s} {s} {s}\n", .{ path, is_staged, status });
+    if (staged.items.len > 0) {
+        std.debug.print("v Staged changes ({d})\n", .{staged.items.len});
+        for (staged.items) |diff_delta| {
+            std.debug.print("> {s}   {s}\n", .{ diff_delta.status().name(), diff_delta.diff_delta.*.new_file.path });
+        }
+        std.debug.print("\n", .{});
+    }
 
-    //     // std.debug.print("{any}\n", .{GitStatus.from_git_status_t(status_entry.*.status)});
-    // }
+    std.debug.print("> Recent commits\n", .{});
 }
 
 const GitRepo = struct {

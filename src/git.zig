@@ -105,14 +105,14 @@ pub const StatusEntry = struct {
 
     status_entry: *const c.git_status_entry,
 
-    pub fn index_to_workdir(self: Self) ?DiffDelta {
+    pub fn unstaged(self: Self) ?DiffDelta {
         if (self.status_entry.*.index_to_workdir == null) {
             return null;
         }
         return .{ .diff_delta = self.status_entry.*.index_to_workdir };
     }
 
-    pub fn head_to_index(self: Self) ?DiffDelta {
+    pub fn staged(self: Self) ?DiffDelta {
         if (self.status_entry.*.head_to_index == null) {
             return null;
         }
