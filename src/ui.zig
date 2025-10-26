@@ -8,9 +8,20 @@ const term = @import("term.zig");
 //
 // - When highlighting a line, make the background go to the end of the line.
 //   Don't just stop at the end of the text.
-//
-// - I need to be able to give the `State` struct the current state of the repo
-//   in order to have it be the home of "react to input" actually make sense.
+
+const RepoStatus = struct {
+    status_list: git.StatusList,
+    staged: std.ArrayList(git.DiffDelta),
+    unstaged: std.ArrayList(git.DiffDelta),
+    untracked: std.ArrayList(git.DiffDelta),
+
+    fn deinit(self: *RepoStatus, allocator: std.mem.Allocator) void {
+        self.status_list.deinit();
+        self.staged.deinit(allocator);
+        self.unstaged.deinit(allocator);
+        self.untracked.deinit(allocator);
+    }
+};
 
 pub const Interface = struct {
     const Self = @This();
@@ -18,6 +29,7 @@ pub const Interface = struct {
     allocator: std.mem.Allocator,
     original_termios: posix.termios,
     repo: git.Repo,
+    repo_status: ?RepoStatus,
     state: State,
     stdin: std.fs.File,
     stdout: std.fs.File,
@@ -28,6 +40,7 @@ pub const Interface = struct {
             .allocator = allocator,
             .original_termios = try term.enter_raw_mode(),
             .repo = repo,
+            .repo_status = null,
             .state = .{ .pos = 0, .section = .head },
             .stdin = std.fs.File.stdin(),
             .stdout = std.fs.File.stdout(),
@@ -36,11 +49,54 @@ pub const Interface = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        if (self.repo_status) |*status| {
+            status.deinit(self.allocator);
+        }
         term.restore(self.original_termios) catch {};
         self.allocator.destroy(self);
     }
 
+    pub fn update(self: *Self) !void {
+        const status_list = try self.repo.status();
+        errdefer status_list.deinit();
+
+        var staged = std.ArrayList(git.DiffDelta).empty;
+        errdefer staged.deinit(self.allocator);
+
+        var unstaged = std.ArrayList(git.DiffDelta).empty;
+        errdefer unstaged.deinit(self.allocator);
+
+        var untracked = std.ArrayList(git.DiffDelta).empty;
+        errdefer untracked.deinit(self.allocator);
+
+        var iter = status_list.iter();
+        while (try iter.next()) |entry| {
+            if (entry.staged()) |staged_diff| {
+                try staged.append(self.allocator, staged_diff);
+            }
+            if (entry.unstaged()) |unstaged_diff| {
+                if (unstaged_diff.status() == .Untracked) {
+                    try untracked.append(self.allocator, unstaged_diff);
+                } else {
+                    try unstaged.append(self.allocator, unstaged_diff);
+                }
+            }
+        }
+
+        if (self.repo_status) |*repo_status| {
+            repo_status.deinit(self.allocator);
+        }
+        self.repo_status = .{
+            .status_list = status_list,
+            .staged = staged,
+            .unstaged = unstaged,
+            .untracked = untracked,
+        };
+    }
+
     pub fn handle_input(self: *Self) !bool {
+        const repo_status = self.repo_status orelse return error.NoRepoStatus;
+
         var buf: [16]u8 = undefined;
         const len = try self.stdin.read(&buf);
         const slice = buf[0..len];
@@ -61,12 +117,14 @@ pub const Interface = struct {
             break :blk null;
         };
         if (input) |confirmed_input| {
-            return self.state.handle_input(confirmed_input);
+            return self.state.handle_input(&repo_status, confirmed_input);
         }
         return false;
     }
 
-    pub fn paint(self: *Self, allocator: std.mem.Allocator) !void {
+    pub fn paint(self: *Self) !void {
+        const repo_status = self.repo_status orelse return error.NoRepoStatus;
+
         var stdout_buf: [1024]u8 = undefined;
         var stdout_writer = self.stdout.writer(&stdout_buf);
         var writer = &stdout_writer.interface;
@@ -76,36 +134,10 @@ pub const Interface = struct {
         // Clear screen and move cursor to home
         try writer.writeAll("\x1b[2J\x1b[H");
 
-        const status = try self.repo.status();
-        defer status.deinit();
-
-        var staged = std.ArrayList(git.DiffDelta).empty;
-        defer staged.deinit(allocator);
-
-        var unstaged = std.ArrayList(git.DiffDelta).empty;
-        defer unstaged.deinit(allocator);
-
-        var untracked = std.ArrayList(git.DiffDelta).empty;
-        defer untracked.deinit(allocator);
-
-        var iter = status.iter();
-        while (try iter.next()) |entry| {
-            if (entry.staged()) |staged_diff| {
-                try staged.append(allocator, staged_diff);
-            }
-            if (entry.unstaged()) |unstaged_diff| {
-                if (unstaged_diff.status() == .Untracked) {
-                    try untracked.append(allocator, unstaged_diff);
-                } else {
-                    try unstaged.append(allocator, unstaged_diff);
-                }
-            }
-        }
-
         try self.paint_refs(pretty);
-        try self.paint_delta(pretty, "Untracked files", untracked, .untracked);
-        try self.paint_delta(pretty, "Unstaged files", unstaged, .unstaged);
-        try self.paint_delta(pretty, "Staged files", staged, .staged);
+        try self.paint_delta(pretty, "Untracked files", repo_status.untracked, .untracked);
+        try self.paint_delta(pretty, "Unstaged files", repo_status.unstaged, .unstaged);
+        try self.paint_delta(pretty, "Staged files", repo_status.staged, .staged);
     }
 
     fn paint_refs(self: *const Self, pretty: Pretty) !void {
@@ -168,15 +200,17 @@ pub const Interface = struct {
             try pretty.printStyled(" ({d})\n\r", base_style, .{deltas.items.len});
         }
 
-        for (1.., deltas.items) |i, delta| {
-            const base_style = self.highlight_style(section, i);
-            try pretty.printStyled("> ", base_style, .{});
-            try pretty.printStyled(
-                "{s}",
-                base_style.add(.{ .bold = true, .foreground = .blue }),
-                .{delta.status().name()},
-            );
-            try pretty.printStyled("    {s}\n\r", base_style, .{delta.diff_delta.*.new_file.path});
+        if (expanded) {
+            for (1.., deltas.items) |i, delta| {
+                const base_style = self.highlight_style(section, i);
+                try pretty.printStyled("> ", base_style, .{});
+                try pretty.printStyled(
+                    "{s}",
+                    base_style.add(.{ .bold = true, .foreground = .blue }),
+                    .{delta.status().name()},
+                );
+                try pretty.printStyled("    {s}\n\r", base_style, .{delta.diff_delta.*.new_file.path});
+            }
         }
         try pretty.print("\n\r", .{});
     }
@@ -219,24 +253,22 @@ const State = struct {
         staged,
     };
 
-    fn handle_input(self: *Self, input: Input) bool {
+    fn handle_input(self: *Self, repo_status: *const RepoStatus, input: Input) bool {
         if (input == .quit) {
             return true;
         }
         switch (self.section) {
-            .head => return self.handle_head_input(input),
-            .untracked => return self.handle_untracked_input(input),
-            .unstaged => return self.handle_unstaged_input(input),
-            .staged => return self.handle_staged_input(input),
+            .head => return self.handle_head_input(repo_status, input),
+            .untracked => return self.handle_untracked_input(repo_status, input),
+            .unstaged => return self.handle_unstaged_input(repo_status, input),
+            .staged => return self.handle_staged_input(repo_status, input),
         }
     }
 
-    fn handle_head_input(self: *Self, input: Input) bool {
+    fn handle_head_input(self: *Self, repo_status: *const RepoStatus, input: Input) bool {
+        _ = repo_status;
         switch (input) {
             .down => {
-                // TODO: need to make State aware of the current deltas,
-                // and then use this to figure out what the next section is,
-                // because it's not "untracked" when there are no untracked files.
                 self.section = .untracked;
             },
             else => {},
@@ -244,9 +276,22 @@ const State = struct {
         return false;
     }
 
-    fn handle_untracked_input(self: *Self, input: Input) bool {
+    fn handle_untracked_input(self: *Self, repo_status: *const RepoStatus, input: Input) bool {
         switch (input) {
-            .down => {},
+            .down => {
+                const max_pos = blk: {
+                    if (!self.untracked_expanded) {
+                        break :blk 0;
+                    }
+                    break :blk repo_status.untracked.items.len;
+                };
+                if (self.pos >= max_pos) {
+                    self.pos = 0;
+                    self.section = .unstaged;
+                } else {
+                    self.pos += 1;
+                }
+            },
             .toggle_expand => {
                 self.untracked_expanded = !self.untracked_expanded;
                 if (!self.untracked_expanded) {
@@ -265,15 +310,80 @@ const State = struct {
         return false;
     }
 
-    fn handle_unstaged_input(self: *Self, input: Input) bool {
-        _ = self;
-        _ = input;
+    fn handle_unstaged_input(self: *Self, repo_status: *const RepoStatus, input: Input) bool {
+        switch (input) {
+            .down => {
+                const max_pos = blk: {
+                    if (!self.unstaged_expanded) {
+                        break :blk 0;
+                    }
+                    break :blk repo_status.unstaged.items.len;
+                };
+                if (self.pos >= max_pos) {
+                    self.pos = 0;
+                    self.section = .staged;
+                } else {
+                    self.pos += 1;
+                }
+            },
+            .toggle_expand => {
+                self.unstaged_expanded = !self.unstaged_expanded;
+                if (!self.unstaged_expanded) {
+                    self.pos = 0;
+                }
+            },
+            .up => {
+                if (self.pos > 0) {
+                    self.pos -= 1;
+                    return false;
+                }
+
+                self.section = .untracked;
+                if (self.untracked_expanded) {
+                    self.pos = repo_status.untracked.items.len;
+                } else {
+                    self.pos = 0;
+                }
+            },
+            else => {},
+        }
         return false;
     }
 
-    fn handle_staged_input(self: *Self, input: Input) bool {
-        _ = self;
-        _ = input;
+    fn handle_staged_input(self: *Self, repo_status: *const RepoStatus, input: Input) bool {
+        switch (input) {
+            .down => {
+                const max_pos = blk: {
+                    if (!self.staged_expanded) {
+                        break :blk 0;
+                    }
+                    break :blk repo_status.staged.items.len;
+                };
+                if (self.pos < max_pos) {
+                    self.pos += 1;
+                }
+            },
+            .toggle_expand => {
+                self.staged_expanded = !self.staged_expanded;
+                if (!self.staged_expanded) {
+                    self.pos = 0;
+                }
+            },
+            .up => {
+                if (self.pos > 0) {
+                    self.pos -= 1;
+                    return false;
+                }
+
+                self.section = .unstaged;
+                if (self.unstaged_expanded) {
+                    self.pos = repo_status.unstaged.items.len;
+                } else {
+                    self.pos = 0;
+                }
+            },
+            else => {},
+        }
         return false;
     }
 };

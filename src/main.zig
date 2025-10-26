@@ -24,7 +24,8 @@ pub fn main() !void {
     defer interface.deinit();
 
     while (true) {
-        try interface.paint(allocator);
+        try interface.update();
+        try interface.paint();
         if (try interface.handle_input()) {
             break;
         }
