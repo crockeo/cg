@@ -61,20 +61,26 @@ pub const Repo = struct {
     }
 };
 
-pub const Object = struct {
+pub const Commit = struct {
     const Self = @This();
 
-    object: ?*c.git_object,
+    commit: ?*c.git_commit,
 
     pub fn deinit(self: Self) void {
-        c.git_object_free(self.object);
+        c.git_commit_free(self.commit);
     }
 
     pub fn sha(self: Self) [c.GIT_OID_HEXSZ]u8 {
-        const oid = c.git_object_id(self.object);
+        const oid = c.git_object_id(@ptrCast(self.commit));
         var sha_str: [c.GIT_OID_HEXSZ]u8 = undefined;
         _ = c.git_oid_tostr(&sha_str, c.GIT_OID_HEXSZ, oid);
         return sha_str;
+    }
+
+    pub fn title(self: Self) []const u8 {
+        const title_ptr = c.git_commit_summary(self.commit);
+        const len = c.strlen(title_ptr);
+        return title_ptr[0..len];
     }
 };
 
@@ -87,24 +93,19 @@ pub const Ref = struct {
         c.git_reference_free(self.reference);
     }
 
-    pub fn commit_object(self: Self) err.GitError!Object {
-        var object = Object{ .object = undefined };
+    pub fn commit(self: Self) err.GitError!Commit {
+        var object = Commit{ .commit = undefined };
         try err.wrap_git(c.git_reference_peel(
-            &object.object,
+            &object.commit,
             self.reference,
             c.GIT_OBJECT_COMMIT,
         ));
         return object;
     }
 
-    pub fn branch_name(self: Self) err.GitError!?[]const u8 {
+    pub fn branch_name(self: Self) err.GitError![]const u8 {
         var branch_name_ptr: [*c]const u8 = undefined;
-        err.wrap_git(c.git_branch_name(&branch_name_ptr, self.reference)) catch |e| {
-            if (e == err.GitError.Invalid) {
-                return null;
-            }
-            return e;
-        };
+        try err.wrap_git(c.git_branch_name(&branch_name_ptr, self.reference));
         const len = c.strlen(branch_name_ptr);
         return branch_name_ptr[0..len];
     }
