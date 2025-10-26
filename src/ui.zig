@@ -1,47 +1,55 @@
 const std = @import("std");
-const c = @cImport({
-    @cInclude("curses.h");
-});
+const posix = std.posix;
 
-const err = @import("err.zig");
 const git = @import("git.zig");
+const term = @import("term.zig");
 
 pub const Interface = struct {
     const Self = @This();
 
+    allocator: std.mem.Allocator,
+    original_termios: posix.termios,
     repo: git.Repo,
-    window: *c.WINDOW,
+    stdin: std.fs.File,
+    stdout: std.fs.File,
 
-    pub fn init(repo: git.Repo) err.CursesError!Self {
-        const window = c.initscr();
-        if (window == null) {
-            return err.CursesError.CursesError;
-        }
-        errdefer _ = c.endwin();
-
-        try err.wrap_curses(c.cbreak());
-        try err.wrap_curses(c.noecho());
-        try err.wrap_curses(c.keypad(window, true));
-        try Color.init();
-
-        return .{
+    pub fn init(allocator: std.mem.Allocator, repo: git.Repo) !*Self {
+        const self = try allocator.create(Self);
+        self.* = .{
+            .allocator = allocator,
+            .original_termios = try term.enter_raw_mode(),
             .repo = repo,
-            .window = window.?,
+            .stdin = std.fs.File.stdin(),
+            .stdout = std.fs.File.stdout(),
         };
+        return self;
     }
 
     pub fn deinit(self: *Self) void {
-        _ = self;
-        _ = c.endwin();
+        term.restore(self.original_termios) catch {};
+        self.allocator.destroy(self);
     }
 
-    pub fn handle_input(self: *Self) void {
-        _ = c.getch();
-        _ = self;
+    pub fn handle_input(self: *Self) !bool {
+        var buf: [16]u8 = undefined;
+        const len = try self.stdin.read(&buf);
+
+        if (std.mem.eql(u8, buf[0..len], "q")) {
+            return true;
+        }
+        return false;
     }
 
     pub fn paint(self: *Self, allocator: std.mem.Allocator) !void {
-        try err.wrap_curses(c.clear());
+        var stdout_buf: [1024]u8 = undefined;
+        var stdout_writer = self.stdout.writer(&stdout_buf);
+        var writer = &stdout_writer.interface;
+        defer writer.flush() catch {};
+
+        const pretty = Pretty{ .writer = writer };
+
+        // Clear screen and move cursor to home
+        try writer.writeAll("\x1b[2J\x1b[H");
 
         const status = try self.repo.status();
         defer status.deinit();
@@ -70,139 +78,110 @@ pub const Interface = struct {
         }
 
         // TODO: actually get the SHA of the root, and the commit message
-        try Printer.print("> Head:     SHA1 branch commit message\n\n", .{}, .{});
+        try writer.print("> Head:     SHA1 branch commit message\n\n\r", .{});
 
         if (untracked.items.len > 0) {
-            try Printer.print("v ", .{}, .{});
-            try Printer.print("Untracked files", .{ .bold = true, .color = .section_header }, .{});
-            try Printer.print(" ({d})\n", .{}, .{untracked.items.len});
+            try pretty.print("v ", .{}, .{});
+            try pretty.print("Untracked files", .{ .bold = true, .foreground = .mauve }, .{});
+            try writer.print(" ({d})\n\r", .{untracked.items.len});
 
             for (untracked.items) |diff_delta| {
-                try err.wrap_curses(c.printw("> %s\n", diff_delta.diff_delta.*.new_file.path));
+                try writer.print("> {s}\n\r", .{diff_delta.diff_delta.*.new_file.path});
             }
-            try err.wrap_curses(c.printw("\n"));
+            try writer.writeAll("\n\r");
         }
 
         if (unstaged.items.len > 0) {
-            try err.wrap_curses(c.printw("v Unstaged changes (%d)\n", unstaged.items.len));
+            try pretty.print("v ", .{}, .{});
+            try pretty.print("Unstaged changes", .{ .bold = true, .foreground = .mauve }, .{});
+            try pretty.print(" ({d})\n\r", .{}, .{unstaged.items.len});
             for (unstaged.items) |diff_delta| {
-                const status_name: [*c]const u8 = @ptrCast(diff_delta.status().name());
-                try err.wrap_curses(c.printw("> %s   %s\n", status_name, diff_delta.diff_delta.*.new_file.path));
+                const status_name = diff_delta.status().name();
+                try pretty.print("> ", .{}, .{});
+                try pretty.print("{s}", .{ .bold = true, .foreground = .blue }, .{status_name});
+                try pretty.print("    {s}\n\r", .{}, .{diff_delta.diff_delta.*.new_file.path});
             }
-            try err.wrap_curses(c.printw(
-                "\n",
-            ));
+            try writer.writeAll("\n\r");
         }
 
         if (staged.items.len > 0) {
-            try err.wrap_curses(c.printw("v Staged changes (%d)\n", staged.items.len));
+            try writer.print("v Staged changes ({d})\n\r", .{staged.items.len});
             for (staged.items) |diff_delta| {
-                const status_name: [*c]const u8 = @ptrCast(diff_delta.status().name());
-                try err.wrap_curses(c.printw("> %s   %s\n", status_name, diff_delta.diff_delta.*.new_file.path));
+                const status_name = diff_delta.status().name();
+                try writer.print("> {s}   {s}\n\r", .{ status_name, diff_delta.diff_delta.*.new_file.path });
             }
-            try err.wrap_curses(c.printw(
-                "\n",
-            ));
+            try writer.writeAll("\n\r");
         }
 
-        try err.wrap_curses(c.printw(
-            "> Recent commits\n",
-        ));
+        try pretty.print("> ", .{}, .{});
+        try pretty.print("Recent commits\n\r", .{ .bold = true, .foreground = .mauve }, .{});
     }
 };
 
-const Color = enum(c_int) {
-    section_header = 1,
+const Pretty = struct {
+    const Self = @This();
 
-    fn init() err.CursesError!void {
-        try err.wrap_curses(c.start_color());
-        try err.wrap_curses(c.use_default_colors());
-        try err.wrap_curses(c.init_pair(@intFromEnum(Color.section_header), c.COLOR_MAGENTA, -1));
+    writer: *std.io.Writer,
+
+    pub fn print(self: Self, comptime fmt: []const u8, style: Style, args: anytype) error{WriteFailed}!void {
+        errdefer self.reset() catch {};
+        try style.start(self.writer);
+        try self.writer.print(fmt, args);
+        try self.reset();
     }
 
-    fn attron(self: Color) err.CursesError!void {
-        try err.wrap_curses(c.attron(c.COLOR_PAIR(@intFromEnum(self))));
-    }
-
-    fn attroff(self: Color) err.CursesError!void {
-        try err.wrap_curses(c.attroff(c.COLOR_PAIR(@intFromEnum(self))));
+    fn reset(self: Self) error{WriteFailed}!void {
+        try self.writer.writeAll("\x1b[0m");
     }
 };
 
-const PrintOptions = struct {
+const Style = struct {
+    const Self = @This();
+
+    background: ?Color = null,
+    foreground: ?Color = null,
     bold: bool = false,
-    color: ?Color = null,
+
+    fn start(self: Self, writer: *std.io.Writer) error{WriteFailed}!void {
+        if (self.bold) {
+            try writer.writeAll("\x1b[1m");
+        }
+        if (self.foreground) |foreground| {
+            try writer.writeAll("\x1b[38;2;");
+            try foreground.print(writer);
+            try writer.writeAll("m");
+        }
+    }
 };
 
-fn print(contents: [*c]const u8, options: PrintOptions) err.CursesError!void {
-    if (options.bold) {
-        try err.wrap_curses(c.attron(c.A_BOLD));
-    }
-    if (options.color) |color| {
-        try err.wrap_curses(c.attron(c.COLOR_PAIR(@intFromEnum(color))));
-    }
+const Color = struct {
+    const Self = @This();
 
-    // TODO: how to pass args?
-    try err.wrap_curses(c.printw(contents));
+    r: u8,
+    g: u8,
+    b: u8,
 
-    if (options.color) |color| {
-        try err.wrap_curses(c.attroff(c.COLOR_PAIR(@intFromEnum(color))));
-    }
-    if (options.bold) {
-        try err.wrap_curses(c.attroff(c.A_BOLD));
-    }
-}
+    pub const blue = Self{ .r = 0x8a, .g = 0xad, .b = 0xf4 };
+    pub const flamingo = Self{ .r = 0xf0, .g = 0xc6, .b = 0xc6 };
+    pub const green = Self{ .r = 0xa6, .g = 0xda, .b = 0x95 };
+    pub const lavender = Self{ .r = 0xb7, .g = 0xbd, .b = 0xf8 };
+    pub const maroon = Self{ .r = 0xee, .g = 0x99, .b = 0xa0 };
+    pub const mauve = Self{ .r = 0xc6, .g = 0xa0, .b = 0xf6 };
+    pub const peach = Self{ .r = 0xf5, .g = 0xa9, .b = 0x7f };
+    pub const pink = Self{ .r = 0xf5, .g = 0xbd, .b = 0xe6 };
+    pub const red = Self{ .r = 0xed, .g = 0x87, .b = 0x96 };
+    pub const rosewater = Self{ .r = 0xf4, .g = 0xdb, .b = 0xd6 };
+    pub const sapphire = Self{ .r = 0x7d, .g = 0xc4, .b = 0xe4 };
+    pub const sky = Self{ .r = 0x91, .g = 0xd7, .b = 0xe3 };
+    pub const teal = Self{ .r = 0x8b, .g = 0xd5, .b = 0xca };
+    pub const text = Self{ .r = 0xca, .g = 0xd3, .b = 0xf5 };
+    pub const yellow = Self{ .r = 0xee, .g = 0xd4, .b = 0x9f };
 
-const Printer = struct {
-    fn print(comptime fmt: []const u8, options: PrintOptions, args: anytype) Error!void {
-        if (options.bold) {
-            try err.wrap_curses(c.attron(c.A_BOLD));
-        }
-        if (options.color) |color| {
-            try err.wrap_curses(c.attron(c.COLOR_PAIR(@intFromEnum(color))));
-        }
-
-        try writer.print(fmt, args);
-
-        if (options.color) |color| {
-            try err.wrap_curses(c.attroff(c.COLOR_PAIR(@intFromEnum(color))));
-        }
-        if (options.bold) {
-            try err.wrap_curses(c.attroff(c.A_BOLD));
-        }
+    fn print(self: Self, writer: *std.io.Writer) error{WriteFailed}!void {
+        try writer.print("{d};{d};{d}", .{ self.r, self.g, self.b });
     }
 
-    // ... all of this is just implementation details,
-    // which allow us to treat ncurses output as if
-    // it were just a normal Zig std.io.Writer.
-    const Error = error{WriteFailed} || err.CursesError;
-
-    const vtable = std.io.Writer.VTable{
-        .drain = drain,
-    };
-
-    var writer = std.io.Writer{
-        .buffer = &.{},
-        .vtable = &vtable,
-    };
-
-    fn drain(_: *std.io.Writer, data: []const []const u8, splat: usize) error{WriteFailed}!usize {
-        // TODO: to be a Good(tm) writer, I need to do something with `splat`.
-        // Not thinking about that for now.
-        _ = splat;
-
-        var written: usize = 0;
-        for (data) |slice| {
-            const ret = c.addnstr(
-                @ptrCast(@alignCast(slice.ptr)),
-                @intCast(slice.len),
-            );
-            if (ret == c.ERR) {
-                return error.WriteFailed;
-            }
-            written += slice.len;
-        }
-
-        return written;
+    fn enable(self: Color, writer: *std.io.Writer) !void {
+        try writer.print("\x1b[38;2;{d};{d};{d}m", .{ self.r, self.g, self.b });
     }
 };

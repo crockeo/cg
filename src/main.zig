@@ -20,12 +20,14 @@ pub fn main() !void {
     const repo = try lib.open_repo("./");
     defer repo.deinit();
 
-    var interface = try ui.Interface.init(repo);
+    var interface = try ui.Interface.init(allocator, repo);
     defer interface.deinit();
 
     while (true) {
         try interface.paint(allocator);
-        interface.handle_input();
+        if (try interface.handle_input()) {
+            break;
+        }
     }
 }
 
