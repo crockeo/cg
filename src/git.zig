@@ -59,6 +59,12 @@ pub const Repo = struct {
         ));
         return status_list;
     }
+
+    pub fn index(self: Self) err.GitError!Index {
+        var idx: Index = .{ .index = undefined };
+        try err.wrap_git(c.git_repository_index(&idx.index, self.repo));
+        return idx;
+    }
 };
 
 pub const Commit = struct {
@@ -186,6 +192,11 @@ pub const DiffDelta = struct {
         return @enumFromInt(self.diff_delta.*.status);
     }
 
+    pub fn path(self: Self) [:0]const u8 {
+        const len = c.strlen(self.diff_delta.*.new_file.path);
+        return self.diff_delta.*.new_file.path[0..len :0];
+    }
+
     pub const Status = enum(c_uint) {
         Unmodified = 0,
         Added = 1,
@@ -215,4 +226,21 @@ pub const DiffDelta = struct {
             }
         }
     };
+};
+
+pub const Index = struct {
+    const Self = @This();
+
+    index: ?*c.git_index,
+
+    pub fn deinit(self: Self) void {
+        c.git_index_free(self.index);
+    }
+
+    pub fn stage_files(self: Self, paths: []const [:0]const u8) err.GitError!void {
+        for (paths) |path| {
+            try err.wrap_git(c.git_index_add_bypath(self.index, path));
+        }
+        try err.wrap_git(c.git_index_write(self.index));
+    }
 };

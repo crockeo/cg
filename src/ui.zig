@@ -10,6 +10,7 @@ const term = @import("term.zig");
 //   Don't just stop at the end of the text.
 
 const RepoStatus = struct {
+    repo: *const git.Repo,
     status_list: git.StatusList,
     staged: std.ArrayList(git.DiffDelta),
     unstaged: std.ArrayList(git.DiffDelta),
@@ -87,6 +88,7 @@ pub const Interface = struct {
             repo_status.deinit(self.allocator);
         }
         self.repo_status = .{
+            .repo = &self.repo,
             .status_list = status_list,
             .staged = staged,
             .unstaged = unstaged,
@@ -107,6 +109,9 @@ pub const Interface = struct {
             }
             if (std.mem.eql(u8, slice, "q")) {
                 break :blk .quit;
+            }
+            if (std.mem.eql(u8, slice, "s")) {
+                break :blk .stage;
             }
             if (std.mem.eql(u8, slice, "\x09")) {
                 break :blk .toggle_expand;
@@ -242,6 +247,7 @@ const State = struct {
     const Input = enum {
         down,
         quit,
+        stage,
         toggle_expand,
         up,
     };
@@ -292,6 +298,21 @@ const State = struct {
                     self.pos += 1;
                 }
             },
+            .stage => {
+                const idx = repo_status.repo.index() catch return false;
+                defer idx.deinit();
+
+                if (self.pos == 0) {
+                    for (repo_status.untracked.items) |delta| {
+                        const paths = [_][:0]const u8{delta.path()};
+                        idx.stage_files(&paths) catch {};
+                    }
+                } else {
+                    const delta = repo_status.untracked.items[self.pos - 1];
+                    const paths = [_][:0]const u8{delta.path()};
+                    idx.stage_files(&paths) catch {};
+                }
+            },
             .toggle_expand => {
                 self.untracked_expanded = !self.untracked_expanded;
                 if (!self.untracked_expanded) {
@@ -324,6 +345,21 @@ const State = struct {
                     self.section = .staged;
                 } else {
                     self.pos += 1;
+                }
+            },
+            .stage => {
+                const idx = repo_status.repo.index() catch return false;
+                defer idx.deinit();
+
+                if (self.pos == 0) {
+                    for (repo_status.unstaged.items) |delta| {
+                        const paths = [_][:0]const u8{delta.path()};
+                        idx.stage_files(&paths) catch {};
+                    }
+                } else {
+                    const delta = repo_status.unstaged.items[self.pos - 1];
+                    const paths = [_][:0]const u8{delta.path()};
+                    idx.stage_files(&paths) catch {};
                 }
             },
             .toggle_expand => {
