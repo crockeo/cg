@@ -115,10 +115,23 @@ pub const Interface = struct {
         if (self.state.section == .head) {
             styles[self.state.pos] = .highlighted;
         }
+
+        const head = try self.repo.head();
+        defer head.deinit();
+
+        const commit = try head.commit_object();
+        defer commit.deinit();
+
+        const sha = commit.sha();
+
         try pretty.printStyled(
-            "{s} Head:   SHA1 commit message\n\r",
+            "{s} Head:   {s} {s} commit message\n\r",
             styles[0],
-            .{Self.prefix(self.state.refs_expanded)},
+            .{
+                Self.prefix(self.state.refs_expanded),
+                sha[0..8],
+                (try head.branch_name()).?,
+            },
         );
         if (self.state.refs_expanded) {
             try pretty.printStyled("  Merge:  SHA1 commit message\n\r", styles[1], .{});

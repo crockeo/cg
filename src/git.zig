@@ -1,5 +1,6 @@
 const c = @cImport({
     @cInclude("git2.h");
+    @cInclude("string.h");
 });
 
 const err = @import("err.zig");
@@ -34,6 +35,12 @@ pub const Repo = struct {
         c.git_repository_free(self.repo);
     }
 
+    pub fn head(self: Self) err.GitError!Ref {
+        var ref: Ref = .{ .reference = undefined };
+        try err.wrap_git(c.git_repository_head(&ref.reference, self.repo));
+        return ref;
+    }
+
     pub fn status(self: Self) err.GitError!StatusList {
         // TODO: allow `status` to receive options,
         // which can be provided to `StatusList`.
@@ -51,6 +58,55 @@ pub const Repo = struct {
             &status_list.opt,
         ));
         return status_list;
+    }
+};
+
+pub const Object = struct {
+    const Self = @This();
+
+    object: ?*c.git_object,
+
+    pub fn deinit(self: Self) void {
+        c.git_object_free(self.object);
+    }
+
+    pub fn sha(self: Self) [c.GIT_OID_HEXSZ]u8 {
+        const oid = c.git_object_id(self.object);
+        var sha_str: [c.GIT_OID_HEXSZ]u8 = undefined;
+        _ = c.git_oid_tostr(&sha_str, c.GIT_OID_HEXSZ, oid);
+        return sha_str;
+    }
+};
+
+pub const Ref = struct {
+    const Self = @This();
+
+    reference: ?*c.git_reference,
+
+    pub fn deinit(self: Self) void {
+        c.git_reference_free(self.reference);
+    }
+
+    pub fn commit_object(self: Self) err.GitError!Object {
+        var object = Object{ .object = undefined };
+        try err.wrap_git(c.git_reference_peel(
+            &object.object,
+            self.reference,
+            c.GIT_OBJECT_COMMIT,
+        ));
+        return object;
+    }
+
+    pub fn branch_name(self: Self) err.GitError!?[]const u8 {
+        var branch_name_ptr: [*c]const u8 = undefined;
+        err.wrap_git(c.git_branch_name(&branch_name_ptr, self.reference)) catch |e| {
+            if (e == err.GitError.Invalid) {
+                return null;
+            }
+            return e;
+        };
+        const len = c.strlen(branch_name_ptr);
+        return branch_name_ptr[0..len];
     }
 };
 
