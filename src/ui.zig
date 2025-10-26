@@ -115,14 +115,7 @@ pub const Interface = struct {
         const commit = try head.commit();
         defer commit.deinit();
 
-        const highlighted = self.state.section == .head;
-        const base_style: Style = blk: {
-            if (highlighted) {
-                break :blk .highlighted;
-            }
-            break :blk .default;
-        };
-
+        const base_style = self.highlight_style(.head, 0);
         try pretty.printStyled("  Head: ", base_style, .{});
         try pretty.printStyled(
             "{s} ",
@@ -157,25 +150,42 @@ pub const Interface = struct {
         deltas: std.ArrayList(git.DiffDelta),
         section: State.Section,
     ) !void {
-        if (deltas.items.len == 0) {
-            return;
-        }
         const expanded = switch (section) {
             .untracked => self.state.untracked_expanded,
             .unstaged => self.state.unstaged_expanded,
             .staged => self.state.staged_expanded,
             else => unreachable,
         };
-        try pretty.print("{s} ", .{Self.prefix(expanded)});
-        try pretty.printStyled("{s}", .{ .bold = true, .foreground = .mauve }, .{header});
-        try pretty.print(" ({d})\n\r", .{deltas.items.len});
 
-        for (deltas.items) |delta| {
-            try pretty.print("> ", .{});
-            try pretty.printStyled("{s}", .{ .bold = true, .foreground = .blue }, .{delta.status().name()});
-            try pretty.print("    {s}\n\r", .{delta.diff_delta.*.new_file.path});
+        {
+            const base_style = self.highlight_style(section, 0);
+            try pretty.printStyled("{s} ", base_style, .{Self.prefix(expanded)});
+            try pretty.printStyled(
+                "{s}",
+                base_style.add(.{ .bold = true, .foreground = .mauve }),
+                .{header},
+            );
+            try pretty.printStyled(" ({d})\n\r", base_style, .{deltas.items.len});
+        }
+
+        for (1.., deltas.items) |i, delta| {
+            const base_style = self.highlight_style(section, i);
+            try pretty.printStyled("> ", base_style, .{});
+            try pretty.printStyled(
+                "{s}",
+                base_style.add(.{ .bold = true, .foreground = .blue }),
+                .{delta.status().name()},
+            );
+            try pretty.printStyled("    {s}\n\r", base_style, .{delta.diff_delta.*.new_file.path});
         }
         try pretty.print("\n\r", .{});
+    }
+
+    fn highlight_style(self: *const Self, section: State.Section, pos: usize) Style {
+        if (self.state.section == section and self.state.pos == pos) {
+            return .highlighted;
+        }
+        return .default;
     }
 
     fn prefix(expanded: bool) []const u8 {
@@ -191,7 +201,6 @@ const State = struct {
 
     pos: usize = 0,
     section: Section = .head,
-    refs_expanded: bool = false,
     untracked_expanded: bool = true,
     unstaged_expanded: bool = true,
     staged_expanded: bool = true,
@@ -225,26 +234,10 @@ const State = struct {
     fn handle_head_input(self: *Self, input: Input) bool {
         switch (input) {
             .down => {
-                if (!self.refs_expanded or self.pos >= 2) {
-                    self.pos = 0;
-                    // TODO: need to make State aware of the current deltas,
-                    // and then use this to figure out what the next section is,
-                    // because it's not "untracked" when there are no untracked files.
-                    self.section = .untracked;
-                } else {
-                    self.pos += 1;
-                }
-            },
-            .toggle_expand => {
-                self.refs_expanded = !self.refs_expanded;
-                if (!self.refs_expanded and self.pos > 0) {
-                    self.pos = 0;
-                }
-            },
-            .up => {
-                if (self.pos > 0) {
-                    self.pos -= 1;
-                }
+                // TODO: need to make State aware of the current deltas,
+                // and then use this to figure out what the next section is,
+                // because it's not "untracked" when there are no untracked files.
+                self.section = .untracked;
             },
             else => {},
         }
@@ -252,8 +245,23 @@ const State = struct {
     }
 
     fn handle_untracked_input(self: *Self, input: Input) bool {
-        _ = self;
-        _ = input;
+        switch (input) {
+            .down => {},
+            .toggle_expand => {
+                self.untracked_expanded = !self.untracked_expanded;
+                if (!self.untracked_expanded) {
+                    self.pos = 0;
+                }
+            },
+            .up => {
+                if (self.pos == 0) {
+                    self.section = .head;
+                } else {
+                    self.pos -= 1;
+                }
+            },
+            else => {},
+        }
         return false;
     }
 
