@@ -237,6 +237,13 @@ pub const Index = struct {
         c.git_index_free(self.index);
     }
 
+    pub fn unstage_files(self: Self, paths: []const [:0]const u8) err.GitError!void {
+        for (paths) |path| {
+            try err.wrap_git(c.git_index_remove_bypath(self.index, path));
+        }
+        try err.wrap_git(c.git_index_write(self.index));
+    }
+
     pub fn stage_files(self: Self, paths: []const [:0]const u8) err.GitError!void {
         for (paths) |path| {
             try err.wrap_git(c.git_index_add_bypath(self.index, path));

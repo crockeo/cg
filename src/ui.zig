@@ -116,6 +116,9 @@ pub const Interface = struct {
             if (std.mem.eql(u8, slice, "\x09")) {
                 break :blk .toggle_expand;
             }
+            if (std.mem.eql(u8, slice, "u")) {
+                break :blk .unstage;
+            }
             if (std.mem.eql(u8, slice, "\x1b[A")) {
                 break :blk .up;
             }
@@ -249,6 +252,7 @@ const State = struct {
         quit,
         stage,
         toggle_expand,
+        unstage,
         up,
     };
 
@@ -259,19 +263,19 @@ const State = struct {
         staged,
     };
 
-    fn handle_input(self: *Self, repo_status: *const RepoStatus, input: Input) bool {
+    fn handle_input(self: *Self, repo_status: *const RepoStatus, input: Input) !bool {
         if (input == .quit) {
             return true;
         }
         switch (self.section) {
-            .head => return self.handle_head_input(repo_status, input),
-            .untracked => return self.handle_untracked_input(repo_status, input),
-            .unstaged => return self.handle_unstaged_input(repo_status, input),
-            .staged => return self.handle_staged_input(repo_status, input),
+            .head => return try self.handle_head_input(repo_status, input),
+            .untracked => return try self.handle_untracked_input(repo_status, input),
+            .unstaged => return try self.handle_unstaged_input(repo_status, input),
+            .staged => return try self.handle_staged_input(repo_status, input),
         }
     }
 
-    fn handle_head_input(self: *Self, repo_status: *const RepoStatus, input: Input) bool {
+    fn handle_head_input(self: *Self, repo_status: *const RepoStatus, input: Input) !bool {
         _ = repo_status;
         switch (input) {
             .down => {
@@ -282,7 +286,7 @@ const State = struct {
         return false;
     }
 
-    fn handle_untracked_input(self: *Self, repo_status: *const RepoStatus, input: Input) bool {
+    fn handle_untracked_input(self: *Self, repo_status: *const RepoStatus, input: Input) !bool {
         switch (input) {
             .down => {
                 const max_pos = blk: {
@@ -299,18 +303,18 @@ const State = struct {
                 }
             },
             .stage => {
-                const idx = repo_status.repo.index() catch return false;
+                const idx = try repo_status.repo.index();
                 defer idx.deinit();
 
                 if (self.pos == 0) {
                     for (repo_status.untracked.items) |delta| {
                         const paths = [_][:0]const u8{delta.path()};
-                        idx.stage_files(&paths) catch {};
+                        try idx.stage_files(&paths);
                     }
                 } else {
                     const delta = repo_status.untracked.items[self.pos - 1];
                     const paths = [_][:0]const u8{delta.path()};
-                    idx.stage_files(&paths) catch {};
+                    try idx.stage_files(&paths);
                 }
             },
             .toggle_expand => {
@@ -331,7 +335,7 @@ const State = struct {
         return false;
     }
 
-    fn handle_unstaged_input(self: *Self, repo_status: *const RepoStatus, input: Input) bool {
+    fn handle_unstaged_input(self: *Self, repo_status: *const RepoStatus, input: Input) !bool {
         switch (input) {
             .down => {
                 const max_pos = blk: {
@@ -348,18 +352,18 @@ const State = struct {
                 }
             },
             .stage => {
-                const idx = repo_status.repo.index() catch return false;
+                const idx = try repo_status.repo.index();
                 defer idx.deinit();
 
                 if (self.pos == 0) {
                     for (repo_status.unstaged.items) |delta| {
                         const paths = [_][:0]const u8{delta.path()};
-                        idx.stage_files(&paths) catch {};
+                        try idx.stage_files(&paths);
                     }
                 } else {
                     const delta = repo_status.unstaged.items[self.pos - 1];
                     const paths = [_][:0]const u8{delta.path()};
-                    idx.stage_files(&paths) catch {};
+                    try idx.stage_files(&paths);
                 }
             },
             .toggle_expand => {
@@ -386,7 +390,7 @@ const State = struct {
         return false;
     }
 
-    fn handle_staged_input(self: *Self, repo_status: *const RepoStatus, input: Input) bool {
+    fn handle_staged_input(self: *Self, repo_status: *const RepoStatus, input: Input) !bool {
         switch (input) {
             .down => {
                 const max_pos = blk: {
@@ -403,6 +407,21 @@ const State = struct {
                 self.staged_expanded = !self.staged_expanded;
                 if (!self.staged_expanded) {
                     self.pos = 0;
+                }
+            },
+            .unstage => {
+                const idx = try repo_status.repo.index();
+                defer idx.deinit();
+
+                if (self.pos == 0) {
+                    for (repo_status.staged.items) |delta| {
+                        const paths = [_][:0]const u8{delta.path()};
+                        idx.unstage_files(&paths) catch {};
+                    }
+                } else {
+                    const delta = repo_status.staged.items[self.pos - 1];
+                    const paths = [_][:0]const u8{delta.path()};
+                    idx.unstage_files(&paths) catch {};
                 }
             },
             .up => {
