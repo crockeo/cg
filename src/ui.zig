@@ -109,74 +109,42 @@ pub const Interface = struct {
     }
 
     fn paint_refs(self: *const Self, pretty: Pretty) !void {
-        var styles = [_]Style{ .default, .default, .default };
-        if (self.state.section == .head) {
-            styles[self.state.pos] = .highlighted;
-        }
-
         const head = try self.repo.head();
         defer head.deinit();
 
         const commit = try head.commit();
         defer commit.deinit();
 
-        try self.paint_reference(
-            pretty,
-            "Head:   ",
-            head,
-            self.state.refs_expanded,
-            self.state.section == .head and self.state.pos == 0,
-        );
-        // TODO: find out how to source the right information for these entries
-        // from libgit2
-        if (self.state.refs_expanded) {
-            try pretty.printStyled("  Merge:  SHA1 commit message\n\r", styles[1], .{});
-            try pretty.printStyled("  Push:   SHA1 commit message\n\r", styles[2], .{});
-        }
-        try pretty.print("\n\r", .{});
-    }
-
-    fn paint_reference(
-        self: *const Self,
-        pretty: Pretty,
-        name: []const u8,
-        ref: git.Ref,
-        expanded: ?bool,
-        highlighted: bool,
-    ) !void {
-        _ = self;
+        const highlighted = self.state.section == .head;
         const base_style: Style = blk: {
             if (highlighted) {
                 break :blk .highlighted;
             }
             break :blk .default;
         };
-        const commit = try ref.commit();
-        defer commit.deinit();
 
-        if (expanded) |exp| {
-            if (exp) {
-                try pretty.printStyled("v ", base_style, .{});
-            } else {
-                try pretty.printStyled("> ", base_style, .{});
-            }
-        } else {
-            try pretty.printStyled("  ", base_style, .{});
-        }
-
-        try pretty.printStyled("{s}", base_style, .{name});
+        try pretty.printStyled("  Head: ", base_style, .{});
         try pretty.printStyled(
             "{s} ",
             base_style.add(.{ .foreground = .sky }),
             .{commit.sha()[0..8]},
         );
+        {
+            const branch_name = try head.branch_name();
+            const style = blk: {
+                if (std.mem.startsWith(u8, branch_name, "origin/")) {
+                    break :blk base_style.add(.{ .foreground = .green });
+                }
+                break :blk base_style.add(.{ .foreground = .peach });
+            };
+            try pretty.printStyled(
+                "{s} ",
+                style,
+                .{branch_name},
+            );
+        }
         try pretty.printStyled(
-            "{s} ",
-            base_style.add(.{ .foreground = .peach }),
-            .{try ref.branch_name()},
-        );
-        try pretty.printStyled(
-            "{s}\n\r",
+            "{s}\n\r\n\r",
             base_style,
             .{commit.title()},
         );
