@@ -109,26 +109,20 @@ pub const Interface = struct {
     }
 
     fn paint_refs(self: *const Self, pretty: Pretty) !void {
-        // TODO: only print the background for the highlighted row, not everything
-        const style = Style{
-            .background = blk: {
-                if (self.state.section == .head) {
-                    break :blk Color.mantle;
-                }
-                break :blk null;
-            },
-        };
-
         // TODO: find out how to source the right information for these entries
         // from libgit2
+        var styles = [_]Style{ .default, .default, .default };
+        if (self.state.section == .head) {
+            styles[self.state.pos] = .highlighted;
+        }
         try pretty.printStyled(
             "{s} Head:   SHA1 commit message\n\r",
-            style,
+            styles[0],
             .{Self.prefix(self.state.refs_expanded)},
         );
         if (self.state.refs_expanded) {
-            try pretty.printStyled("  Merge:  SHA1 commit message\n\r", style, .{});
-            try pretty.printStyled("  Push:   SHA1 commit message\n\r", style, .{});
+            try pretty.printStyled("  Merge:  SHA1 commit message\n\r", styles[1], .{});
+            try pretty.printStyled("  Push:   SHA1 commit message\n\r", styles[2], .{});
         }
         try pretty.print("\n\r", .{});
     }
@@ -281,6 +275,9 @@ const Pretty = struct {
 
 const Style = struct {
     const Self = @This();
+
+    const default = Self{};
+    const highlighted = Self{ .background = .mantle };
 
     background: ?Color = null,
     foreground: ?Color = null,
