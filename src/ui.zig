@@ -4,12 +4,18 @@ const posix = std.posix;
 const git = @import("git.zig");
 const term = @import("term.zig");
 
+// TODOs:
+//
+// - When highlighting a line, make the background go to the end of the line.
+//   Don't just stop at the end of the text.
+
 pub const Interface = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
     original_termios: posix.termios,
     repo: git.Repo,
+    state: State,
     stdin: std.fs.File,
     stdout: std.fs.File,
 
@@ -19,6 +25,7 @@ pub const Interface = struct {
             .allocator = allocator,
             .original_termios = try term.enter_raw_mode(),
             .repo = repo,
+            .state = .{ .pos = 0, .section = .head },
             .stdin = std.fs.File.stdin(),
             .stdout = std.fs.File.stdout(),
         };
@@ -45,7 +52,6 @@ pub const Interface = struct {
         var stdout_writer = self.stdout.writer(&stdout_buf);
         var writer = &stdout_writer.interface;
         defer writer.flush() catch {};
-
         const pretty = Pretty{ .writer = writer };
 
         // Clear screen and move cursor to home
@@ -77,45 +83,79 @@ pub const Interface = struct {
             }
         }
 
-        // TODO: actually get the SHA of the root, and the commit message
-        try writer.print("> Head:     SHA1 branch commit message\n\n\r", .{});
-
-        if (untracked.items.len > 0) {
-            try pretty.print("v ", .{}, .{});
-            try pretty.print("Untracked files", .{ .bold = true, .foreground = .mauve }, .{});
-            try writer.print(" ({d})\n\r", .{untracked.items.len});
-
-            for (untracked.items) |diff_delta| {
-                try writer.print("> {s}\n\r", .{diff_delta.diff_delta.*.new_file.path});
-            }
-            try writer.writeAll("\n\r");
-        }
-
-        if (unstaged.items.len > 0) {
-            try pretty.print("v ", .{}, .{});
-            try pretty.print("Unstaged changes", .{ .bold = true, .foreground = .mauve }, .{});
-            try pretty.print(" ({d})\n\r", .{}, .{unstaged.items.len});
-            for (unstaged.items) |diff_delta| {
-                const status_name = diff_delta.status().name();
-                try pretty.print("> ", .{}, .{});
-                try pretty.print("{s}", .{ .bold = true, .foreground = .blue }, .{status_name});
-                try pretty.print("    {s}\n\r", .{}, .{diff_delta.diff_delta.*.new_file.path});
-            }
-            try writer.writeAll("\n\r");
-        }
-
-        if (staged.items.len > 0) {
-            try writer.print("v Staged changes ({d})\n\r", .{staged.items.len});
-            for (staged.items) |diff_delta| {
-                const status_name = diff_delta.status().name();
-                try writer.print("> {s}   {s}\n\r", .{ status_name, diff_delta.diff_delta.*.new_file.path });
-            }
-            try writer.writeAll("\n\r");
-        }
-
-        try pretty.print("> ", .{}, .{});
-        try pretty.print("Recent commits\n\r", .{ .bold = true, .foreground = .mauve }, .{});
+        try self.paint_refs(pretty);
+        try self.paint_delta(pretty, "Untracked files", untracked, .untracked);
+        try self.paint_delta(pretty, "Unstaged files", unstaged, .unstaged);
+        try self.paint_delta(pretty, "Staged files", staged, .staged);
     }
+
+    fn paint_refs(self: *const Self, pretty: Pretty) !void {
+        const style = Style{
+            .background = blk: {
+                if (self.state.section == .head) {
+                    break :blk Color.mantle;
+                }
+                break :blk null;
+            },
+        };
+
+        try pretty.printStyled(
+            "{s} Head:   SHA1 commit message\n\r\n\r",
+            style,
+            .{Self.prefix(self.state.refs_expanded)},
+        );
+    }
+
+    fn paint_delta(
+        self: *const Self,
+        pretty: Pretty,
+        header: []const u8,
+        deltas: std.ArrayList(git.DiffDelta),
+        section: State.Section,
+    ) !void {
+        if (deltas.items.len == 0) {
+            return;
+        }
+        const expanded = switch (section) {
+            .untracked => self.state.untracked_expanded,
+            .unstaged => self.state.unstaged_expanded,
+            .staged => self.state.staged_expanded,
+            else => unreachable,
+        };
+        try pretty.print("{s} ", .{Self.prefix(expanded)});
+        try pretty.printStyled("{s}", .{ .bold = true, .foreground = .mauve }, .{header});
+        try pretty.print(" ({d})\n\r", .{deltas.items.len});
+
+        for (deltas.items) |delta| {
+            try pretty.print("> ", .{});
+            try pretty.printStyled("{s}", .{ .bold = true, .foreground = .blue }, .{delta.status().name()});
+            try pretty.print("    {s}\n\r", .{delta.diff_delta.*.new_file.path});
+        }
+        try pretty.print("\n\r", .{});
+    }
+
+    fn prefix(expanded: bool) []const u8 {
+        if (expanded) {
+            return "v";
+        }
+        return ">";
+    }
+};
+
+const State = struct {
+    pos: usize = 0,
+    section: Section = .head,
+    refs_expanded: bool = false,
+    untracked_expanded: bool = true,
+    unstaged_expanded: bool = true,
+    staged_expanded: bool = true,
+
+    const Section = enum {
+        head,
+        untracked,
+        unstaged,
+        staged,
+    };
 };
 
 const Pretty = struct {
@@ -123,8 +163,17 @@ const Pretty = struct {
 
     writer: *std.io.Writer,
 
-    pub fn print(self: Self, comptime fmt: []const u8, style: Style, args: anytype) error{WriteFailed}!void {
-        errdefer self.reset() catch {};
+    pub fn print(self: Self, comptime fmt: []const u8, args: anytype) error{WriteFailed}!void {
+        try self.writer.print(fmt, args);
+        try self.reset();
+    }
+
+    pub fn printStyled(
+        self: Self,
+        comptime fmt: []const u8,
+        style: Style,
+        args: anytype,
+    ) error{WriteFailed}!void {
         try style.start(self.writer);
         try self.writer.print(fmt, args);
         try self.reset();
@@ -151,6 +200,11 @@ const Style = struct {
             try foreground.print(writer);
             try writer.writeAll("m");
         }
+        if (self.background) |background| {
+            try writer.writeAll("\x1b[48;2;");
+            try background.print(writer);
+            try writer.writeAll("m");
+        }
     }
 };
 
@@ -161,10 +215,13 @@ const Color = struct {
     g: u8,
     b: u8,
 
+    pub const base = Self{ .r = 0x24, .g = 0x27, .b = 0x3a };
     pub const blue = Self{ .r = 0x8a, .g = 0xad, .b = 0xf4 };
+    pub const crust = Self{ .r = 0x18, .g = 0x19, .b = 0x26 };
     pub const flamingo = Self{ .r = 0xf0, .g = 0xc6, .b = 0xc6 };
     pub const green = Self{ .r = 0xa6, .g = 0xda, .b = 0x95 };
     pub const lavender = Self{ .r = 0xb7, .g = 0xbd, .b = 0xf8 };
+    pub const mantle = Self{ .r = 0x1e, .g = 0x20, .b = 0x30 };
     pub const maroon = Self{ .r = 0xee, .g = 0x99, .b = 0xa0 };
     pub const mauve = Self{ .r = 0xc6, .g = 0xa0, .b = 0xf6 };
     pub const peach = Self{ .r = 0xf5, .g = 0xa9, .b = 0x7f };
