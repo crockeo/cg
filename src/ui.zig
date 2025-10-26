@@ -8,6 +8,9 @@ const term = @import("term.zig");
 //
 // - When highlighting a line, make the background go to the end of the line.
 //   Don't just stop at the end of the text.
+//
+// - I need to be able to give the `State` struct the current state of the repo
+//   in order to have it be the home of "react to input" actually make sense.
 
 pub const Interface = struct {
     const Self = @This();
@@ -40,9 +43,25 @@ pub const Interface = struct {
     pub fn handle_input(self: *Self) !bool {
         var buf: [16]u8 = undefined;
         const len = try self.stdin.read(&buf);
+        const slice = buf[0..len];
 
-        if (std.mem.eql(u8, buf[0..len], "q")) {
-            return true;
+        const input: ?State.Input = blk: {
+            if (std.mem.eql(u8, slice, "\x1b[B")) {
+                break :blk .down;
+            }
+            if (std.mem.eql(u8, slice, "q")) {
+                break :blk .quit;
+            }
+            if (std.mem.eql(u8, slice, "\x09")) {
+                break :blk .toggle_expand;
+            }
+            if (std.mem.eql(u8, slice, "\x1b[A")) {
+                break :blk .up;
+            }
+            break :blk null;
+        };
+        if (input) |confirmed_input| {
+            return self.state.handle_input(confirmed_input);
         }
         return false;
     }
@@ -90,6 +109,7 @@ pub const Interface = struct {
     }
 
     fn paint_refs(self: *const Self, pretty: Pretty) !void {
+        // TODO: only print the background for the highlighted row, not everything
         const style = Style{
             .background = blk: {
                 if (self.state.section == .head) {
@@ -99,11 +119,18 @@ pub const Interface = struct {
             },
         };
 
+        // TODO: find out how to source the right information for these entries
+        // from libgit2
         try pretty.printStyled(
-            "{s} Head:   SHA1 commit message\n\r\n\r",
+            "{s} Head:   SHA1 commit message\n\r",
             style,
             .{Self.prefix(self.state.refs_expanded)},
         );
+        if (self.state.refs_expanded) {
+            try pretty.printStyled("  Merge:  SHA1 commit message\n\r", style, .{});
+            try pretty.printStyled("  Push:   SHA1 commit message\n\r", style, .{});
+        }
+        try pretty.print("\n\r", .{});
     }
 
     fn paint_delta(
@@ -143,6 +170,8 @@ pub const Interface = struct {
 };
 
 const State = struct {
+    const Self = @This();
+
     pos: usize = 0,
     section: Section = .head,
     refs_expanded: bool = false,
@@ -150,12 +179,78 @@ const State = struct {
     unstaged_expanded: bool = true,
     staged_expanded: bool = true,
 
+    const Input = enum {
+        down,
+        quit,
+        toggle_expand,
+        up,
+    };
+
     const Section = enum {
         head,
         untracked,
         unstaged,
         staged,
     };
+
+    fn handle_input(self: *Self, input: Input) bool {
+        if (input == .quit) {
+            return true;
+        }
+        switch (self.section) {
+            .head => return self.handle_head_input(input),
+            .untracked => return self.handle_untracked_input(input),
+            .unstaged => return self.handle_unstaged_input(input),
+            .staged => return self.handle_staged_input(input),
+        }
+    }
+
+    fn handle_head_input(self: *Self, input: Input) bool {
+        switch (input) {
+            .down => {
+                if (!self.refs_expanded or self.pos >= 2) {
+                    self.pos = 0;
+                    // TODO: need to make State aware of the current deltas,
+                    // and then use this to figure out what the next section is,
+                    // because it's not "untracked" when there are no untracked files.
+                    self.section = .untracked;
+                } else {
+                    self.pos += 1;
+                }
+            },
+            .toggle_expand => {
+                self.refs_expanded = !self.refs_expanded;
+                if (!self.refs_expanded and self.pos > 0) {
+                    self.pos = 0;
+                }
+            },
+            .up => {
+                if (self.pos > 0) {
+                    self.pos -= 1;
+                }
+            },
+            else => {},
+        }
+        return false;
+    }
+
+    fn handle_untracked_input(self: *Self, input: Input) bool {
+        _ = self;
+        _ = input;
+        return false;
+    }
+
+    fn handle_unstaged_input(self: *Self, input: Input) bool {
+        _ = self;
+        _ = input;
+        return false;
+    }
+
+    fn handle_staged_input(self: *Self, input: Input) bool {
+        _ = self;
+        _ = input;
+        return false;
+    }
 };
 
 const Pretty = struct {
