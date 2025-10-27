@@ -61,7 +61,7 @@ pub const Repo = struct {
     }
 
     pub fn index(self: Self) err.GitError!Index {
-        var idx: Index = .{ .index = undefined };
+        var idx: Index = .{ .repo = self.repo, .index = undefined };
         try err.wrap_git(c.git_repository_index(&idx.index, self.repo));
         return idx;
     }
@@ -231,23 +231,24 @@ pub const DiffDelta = struct {
 pub const Index = struct {
     const Self = @This();
 
+    const UnstageContext = {};
+
+    repo: ?*c.git_repository,
     index: ?*c.git_index,
 
     pub fn deinit(self: Self) void {
         c.git_index_free(self.index);
     }
 
-    pub fn unstage_files(self: Self, paths: []const [:0]const u8) err.GitError!void {
-        for (paths) |path| {
-            try err.wrap_git(c.git_index_remove_bypath(self.index, path));
-        }
-        try err.wrap_git(c.git_index_write(self.index));
+    pub fn unstage_file(self: Self, path: [:0]const u8) err.GitError!void {
+        try err.wrap_git(c.git_index_remove_bypath(self.index, path));
     }
 
-    pub fn stage_files(self: Self, paths: []const [:0]const u8) err.GitError!void {
-        for (paths) |path| {
-            try err.wrap_git(c.git_index_add_bypath(self.index, path));
-        }
+    pub fn stage_file(self: Self, path: [:0]const u8) err.GitError!void {
+        try err.wrap_git(c.git_index_add_bypath(self.index, path));
+    }
+
+    pub fn write(self: Self) err.GitError!void {
         try err.wrap_git(c.git_index_write(self.index));
     }
 };

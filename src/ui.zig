@@ -308,14 +308,13 @@ const State = struct {
 
                 if (self.pos == 0) {
                     for (repo_status.untracked.items) |delta| {
-                        const paths = [_][:0]const u8{delta.path()};
-                        try idx.stage_files(&paths);
+                        try idx.stage_file(delta.path());
                     }
                 } else {
                     const delta = repo_status.untracked.items[self.pos - 1];
-                    const paths = [_][:0]const u8{delta.path()};
-                    try idx.stage_files(&paths);
+                    try idx.stage_file(delta.path());
                 }
+                try idx.write();
             },
             .toggle_expand => {
                 self.untracked_expanded = !self.untracked_expanded;
@@ -357,14 +356,13 @@ const State = struct {
 
                 if (self.pos == 0) {
                     for (repo_status.unstaged.items) |delta| {
-                        const paths = [_][:0]const u8{delta.path()};
-                        try idx.stage_files(&paths);
+                        try idx.stage_file(delta.path());
                     }
                 } else {
                     const delta = repo_status.unstaged.items[self.pos - 1];
-                    const paths = [_][:0]const u8{delta.path()};
-                    try idx.stage_files(&paths);
+                    try idx.stage_file(delta.path());
                 }
+                try idx.write();
             },
             .toggle_expand => {
                 self.unstaged_expanded = !self.unstaged_expanded;
@@ -415,14 +413,13 @@ const State = struct {
 
                 if (self.pos == 0) {
                     for (repo_status.staged.items) |delta| {
-                        const paths = [_][:0]const u8{delta.path()};
-                        idx.unstage_files(&paths) catch {};
+                        try idx.unstage_file(delta.path());
                     }
                 } else {
                     const delta = repo_status.staged.items[self.pos - 1];
-                    const paths = [_][:0]const u8{delta.path()};
-                    idx.unstage_files(&paths) catch {};
+                    try idx.unstage_file(delta.path());
                 }
+                try idx.write();
             },
             .up => {
                 if (self.pos > 0) {
