@@ -263,6 +263,8 @@ const State = struct {
         staged,
     };
 
+    // TODO: When I stage/unstage, I don't check that the `pos` is valid
+    // w.r.t. the number of remaining elements in the untracked/unstaged/staged list.
     fn handle_input(self: *Self, repo_status: *const RepoStatus, input: Input) !bool {
         if (input == .quit) {
             return true;
