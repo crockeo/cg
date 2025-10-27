@@ -1,3 +1,4 @@
+const std = @import("std");
 const c = @cImport({
     @cInclude("git2.h");
     @cInclude("string.h");
@@ -61,7 +62,7 @@ pub const Repo = struct {
     }
 
     pub fn index(self: Self) err.GitError!Index {
-        var idx: Index = .{ .repo = self.repo, .index = undefined };
+        var idx: Index = .{ .repo = self, .index = undefined };
         try err.wrap_git(c.git_repository_index(&idx.index, self.repo));
         return idx;
     }
@@ -233,7 +234,7 @@ pub const Index = struct {
 
     const UnstageContext = {};
 
-    repo: ?*c.git_repository,
+    repo: Repo,
     index: ?*c.git_index,
 
     pub fn deinit(self: Self) void {
@@ -241,7 +242,34 @@ pub const Index = struct {
     }
 
     pub fn unstage_file(self: Self, path: [:0]const u8) err.GitError!void {
-        try err.wrap_git(c.git_index_remove_bypath(self.index, path));
+        // TODO: instead of doing this for *every* unstage,
+        // we could make most of this context ahead of time for bulk operations.
+        const head = try self.repo.head();
+        defer head.deinit();
+
+        const head_commit = try head.commit();
+
+        var tree: ?*c.git_tree = undefined;
+        try err.wrap_git(c.git_commit_tree(&tree, head_commit.commit));
+        defer c.git_tree_free(tree);
+
+        var tree_entry: ?*c.git_tree_entry = undefined;
+        try err.wrap_git(c.git_tree_entry_bypath(&tree_entry, tree, path));
+        defer c.git_tree_entry_free(tree_entry);
+
+        if (tree_entry == null) {
+            try err.wrap_git(c.git_index_remove_bypath(self.index, path));
+        } else {
+            const object_id = c.git_tree_entry_id(tree_entry);
+            const filemode = c.git_tree_entry_filemode(tree_entry);
+
+            var index_entry: c.git_index_entry = std.mem.zeroes(c.git_index_entry);
+            index_entry.path = path;
+            index_entry.id = object_id.*;
+            index_entry.mode = filemode;
+
+            try err.wrap_git(c.git_index_add(self.index, &index_entry));
+        }
     }
 
     pub fn stage_file(self: Self, path: [:0]const u8) err.GitError!void {
