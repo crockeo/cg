@@ -254,25 +254,28 @@ pub const Index = struct {
         defer c.git_tree_free(tree);
 
         var tree_entry: ?*c.git_tree_entry = undefined;
-        try err.wrap_git(c.git_tree_entry_bypath(&tree_entry, tree, path));
+        err.wrap_git(c.git_tree_entry_bypath(&tree_entry, tree, path)) catch |e| {
+            if (e == err.GitError.NotFound) {
+                try err.wrap_git(c.git_index_remove_bypath(self.index, path));
+                return;
+            }
+            return e;
+        };
         defer c.git_tree_entry_free(tree_entry);
 
-        if (tree_entry == null) {
-            try err.wrap_git(c.git_index_remove_bypath(self.index, path));
-        } else {
-            const object_id = c.git_tree_entry_id(tree_entry);
-            const filemode = c.git_tree_entry_filemode(tree_entry);
+        const object_id = c.git_tree_entry_id(tree_entry);
+        const filemode = c.git_tree_entry_filemode(tree_entry);
 
-            var index_entry: c.git_index_entry = std.mem.zeroes(c.git_index_entry);
-            index_entry.path = path;
-            index_entry.id = object_id.*;
-            index_entry.mode = filemode;
+        var index_entry: c.git_index_entry = std.mem.zeroes(c.git_index_entry);
+        index_entry.path = path;
+        index_entry.id = object_id.*;
+        index_entry.mode = filemode;
 
-            try err.wrap_git(c.git_index_add(self.index, &index_entry));
-        }
+        try err.wrap_git(c.git_index_add(self.index, &index_entry));
     }
 
     pub fn stage_file(self: Self, path: [:0]const u8) err.GitError!void {
+        // TODO: I believe this breaks when we attempt to stage a deletion.
         try err.wrap_git(c.git_index_add_bypath(self.index, path));
     }
 
