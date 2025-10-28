@@ -509,10 +509,7 @@ const State = struct {
         };
         defer self.allocator.free(commit_message);
 
-        try self.set_debug_message(commit_message);
-
         try repo.commit(commit_message);
-        // _ = repo;
     }
 
     fn set_debug_message(self: *Self, debug_message: []const u8) error{OutOfMemory}!void {

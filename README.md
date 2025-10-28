@@ -12,7 +12,7 @@ Look sparse? I started creating after building out some of the basic features.
 
 - Features
     - [ ] View a diff (tab expand deltas)
-    - [ ] Commit
+    - [x] Commit
     - [ ] Push
 - Speed
     - [ ] Profile on large repo (e.g. $JOB monolith).
