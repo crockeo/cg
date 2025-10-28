@@ -310,11 +310,11 @@ const State = struct {
 
                 if (self.pos == 0) {
                     for (repo_status.untracked.items) |delta| {
-                        try idx.stage_file(delta.path());
+                        try idx.stage(delta);
                     }
                 } else {
                     const delta = repo_status.untracked.items[self.pos - 1];
-                    try idx.stage_file(delta.path());
+                    try idx.stage(delta);
                 }
                 try idx.write();
             },
@@ -358,11 +358,11 @@ const State = struct {
 
                 if (self.pos == 0) {
                     for (repo_status.unstaged.items) |delta| {
-                        try idx.stage_file(delta.path());
+                        try idx.stage(delta);
                     }
                 } else {
                     const delta = repo_status.unstaged.items[self.pos - 1];
-                    try idx.stage_file(delta.path());
+                    try idx.stage(delta);
                 }
                 try idx.write();
             },

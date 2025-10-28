@@ -274,9 +274,13 @@ pub const Index = struct {
         try err.wrap_git(c.git_index_add(self.index, &index_entry));
     }
 
-    pub fn stage_file(self: Self, path: [:0]const u8) err.GitError!void {
-        // TODO: I believe this breaks when we attempt to stage a deletion.
-        try err.wrap_git(c.git_index_add_bypath(self.index, path));
+    pub fn stage(self: Self, diff_delta: DiffDelta) err.GitError!void {
+        const path = diff_delta.path();
+        if (diff_delta.status() == .Deleted) {
+            try err.wrap_git(c.git_index_remove_bypath(self.index, path));
+        } else {
+            try err.wrap_git(c.git_index_add_bypath(self.index, path));
+        }
     }
 
     pub fn write(self: Self) err.GitError!void {
