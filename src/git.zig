@@ -59,7 +59,7 @@ pub const Repo = struct {
     }
 
     pub fn remote(self: Self, name: [:0]const u8) err.GitError!Remote {
-        var rmt: Remote = .{ .remote = undefined };
+        var rmt: Remote = .{ .repo = self, .remote = undefined };
         try err.wrap_git(c.git_remote_lookup(&rmt.remote, self.repo, name));
         return rmt;
     }
@@ -137,18 +137,54 @@ pub const Ref = struct {
 const Remote = struct {
     const Self = @This();
 
+    repo: Repo,
     remote: ?*c.git_remote,
 
+    // TODO: clean up and debug this AI slop :)
     pub fn push(self: Self) err.GitError!void {
         var opts: c.git_push_options = undefined;
         try err.wrap_git(c.git_push_options_init(&opts, c.GIT_PUSH_OPTIONS_VERSION));
         opts.callbacks.credentials = Remote.credentials_callback;
+        opts.callbacks.push_update_reference = Remote.push_update_reference_callback;
+
+        // Get current branch
+        const head = try self.repo.head();
+        defer head.deinit();
+        const branch = try head.branch_name();
+
+        // Build refspec for current branch
+        var refspec_buf: [256]u8 = undefined;
+        const refspec = std.fmt.bufPrintZ(
+            &refspec_buf,
+            "refs/heads/{s}:refs/heads/{s}",
+            .{ branch, branch },
+        ) catch @panic("Oh no");
+
+        var refspecs = [_][*c]const u8{refspec.ptr};
+        var refspecs_array = c.git_strarray{
+            .strings = @ptrCast(&refspecs),
+            .count = 1,
+        };
 
         try err.wrap_git(c.git_remote_push(
             self.remote,
-            null,
+            &refspecs_array,
             &opts,
         ));
+    }
+
+    fn push_update_reference_callback(
+        refname: [*c]const u8,
+        status: [*c]const u8,
+        data: ?*anyopaque,
+    ) callconv(.c) c_int {
+        _ = refname;
+        _ = data;
+        if (status != null) {
+            // Push failed with a status message
+            return -1;
+        }
+        return 0;
     }
 
     fn credentials_callback(
@@ -162,14 +198,7 @@ const Remote = struct {
         _ = payload;
 
         if (allowed_types & c.GIT_CREDTYPE_SSH_KEY > 0) {
-            // TODO: look up SSH key based on Git/SSH config, if specified.
-            return c.git_cred_ssh_key_new(
-                out,
-                username_from_url,
-                "~/.ssh/id_ed25519.pub",
-                "~/.ssh/id_ed25519",
-                "",
-            );
+            return c.git_credential_ssh_key_from_agent(out, username_from_url);
         }
 
         return -1;
