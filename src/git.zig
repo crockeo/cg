@@ -58,6 +58,12 @@ pub const Repo = struct {
         return idx;
     }
 
+    pub fn remote(self: Self, name: [:0]const u8) err.GitError!Remote {
+        var rmt: Remote = .{ .remote = undefined };
+        try err.wrap_git(c.git_remote_lookup(&rmt.remote, self.repo, name));
+        return rmt;
+    }
+
     pub fn status(self: Self) err.GitError!StatusList {
         // TODO: allow `status` to receive options,
         // which can be provided to `StatusList`.
@@ -125,6 +131,20 @@ pub const Ref = struct {
         try err.wrap_git(c.git_branch_name(&branch_name_ptr, self.reference));
         const len = c.strlen(branch_name_ptr);
         return branch_name_ptr[0..len];
+    }
+};
+
+const Remote = struct {
+    const Self = @This();
+
+    remote: ?*c.git_remote,
+
+    pub fn push(self: Self) err.GitError!void {
+        try err.wrap_git(c.git_remote_push(
+            self.remote,
+            null,
+            null,
+        ));
     }
 };
 

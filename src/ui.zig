@@ -108,6 +108,7 @@ pub const Interface = struct {
             for ([_]struct { haystack: []const u8, input: State.Input }{
                 .{ .haystack = "c", .input = .commit },
                 .{ .haystack = "\x1b[B", .input = .down },
+                .{ .haystack = "p", .input = .push },
                 .{ .haystack = "q", .input = .quit },
                 .{ .haystack = "s", .input = .stage },
                 .{ .haystack = "\x09", .input = .toggle_expand },
@@ -256,6 +257,7 @@ const State = struct {
     const Input = enum {
         commit,
         down,
+        push,
         quit,
         stage,
         toggle_expand,
@@ -281,6 +283,11 @@ const State = struct {
     fn handle_input(self: *Self, repo_status: *const RepoStatus, input: Input) !bool {
         if (input == .commit and repo_status.staged.items.len > 0) {
             try self.perform_commit(repo_status.repo);
+            return false;
+        }
+        if (input == .push) {
+            // TODO: do this only when we have unpushed commits
+            try self.perform_push(repo_status.repo);
             return false;
         }
         if (input == .quit) {
@@ -510,6 +517,12 @@ const State = struct {
         defer self.allocator.free(commit_message);
 
         try repo.commit(commit_message);
+    }
+
+    fn perform_push(self: *Self, repo: git.Repo) !void {
+        _ = self;
+        const remote = try repo.remote("origin");
+        try remote.push();
     }
 
     fn set_debug_message(self: *Self, debug_message: []const u8) error{OutOfMemory}!void {
