@@ -26,7 +26,7 @@ Look sparse? I started creating after building out some of the basic features.
         - [ ] Custom (lazier?) git implementation
         - [ ] Look at how `git` CLI stays fast
 - Correctness
-    - [ ] Fix staging a deletion.
+    - [x] Fix staging a deletion.
 - Cosmetics
     - [ ] Highlight an entire line when hovering, not just the text.
 
