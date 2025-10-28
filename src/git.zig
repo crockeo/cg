@@ -36,10 +36,26 @@ pub const Repo = struct {
         c.git_repository_free(self.repo);
     }
 
+    pub fn commit(self: Self, message: [:0]const u8) err.GitError!void {
+        var oid: c.git_oid = undefined;
+        try err.wrap_git(c.git_commit_create_from_stage(
+            &oid,
+            self.repo,
+            message,
+            null,
+        ));
+    }
+
     pub fn head(self: Self) err.GitError!Ref {
         var ref: Ref = .{ .reference = undefined };
         try err.wrap_git(c.git_repository_head(&ref.reference, self.repo));
         return ref;
+    }
+
+    pub fn index(self: Self) err.GitError!Index {
+        var idx: Index = .{ .repo = self, .index = undefined };
+        try err.wrap_git(c.git_repository_index(&idx.index, self.repo));
+        return idx;
     }
 
     pub fn status(self: Self) err.GitError!StatusList {
@@ -59,12 +75,6 @@ pub const Repo = struct {
             &status_list.opt,
         ));
         return status_list;
-    }
-
-    pub fn index(self: Self) err.GitError!Index {
-        var idx: Index = .{ .repo = self, .index = undefined };
-        try err.wrap_git(c.git_repository_index(&idx.index, self.repo));
-        return idx;
     }
 };
 

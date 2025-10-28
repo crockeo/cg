@@ -10,7 +10,7 @@ const term = @import("term.zig");
 //   Don't just stop at the end of the text.
 
 const RepoStatus = struct {
-    repo: *const git.Repo,
+    repo: git.Repo,
     status_list: git.StatusList,
     staged: std.ArrayList(git.DiffDelta),
     unstaged: std.ArrayList(git.DiffDelta),
@@ -42,7 +42,7 @@ pub const Interface = struct {
             .original_termios = try term.enter_raw_mode(),
             .repo = repo,
             .repo_status = null,
-            .state = .{ .pos = 0, .section = .head },
+            .state = .{ .allocator = allocator },
             .stdin = std.fs.File.stdin(),
             .stdout = std.fs.File.stdout(),
         };
@@ -53,6 +53,7 @@ pub const Interface = struct {
         if (self.repo_status) |*status| {
             status.deinit(self.allocator);
         }
+        self.state.deinit();
         term.restore(self.original_termios) catch {};
         self.allocator.destroy(self);
     }
@@ -88,7 +89,7 @@ pub const Interface = struct {
             repo_status.deinit(self.allocator);
         }
         self.repo_status = .{
-            .repo = &self.repo,
+            .repo = self.repo,
             .status_list = status_list,
             .staged = staged,
             .unstaged = unstaged,
@@ -104,23 +105,18 @@ pub const Interface = struct {
         const slice = buf[0..len];
 
         const input: ?State.Input = blk: {
-            if (std.mem.eql(u8, slice, "\x1b[B")) {
-                break :blk .down;
-            }
-            if (std.mem.eql(u8, slice, "q")) {
-                break :blk .quit;
-            }
-            if (std.mem.eql(u8, slice, "s")) {
-                break :blk .stage;
-            }
-            if (std.mem.eql(u8, slice, "\x09")) {
-                break :blk .toggle_expand;
-            }
-            if (std.mem.eql(u8, slice, "u")) {
-                break :blk .unstage;
-            }
-            if (std.mem.eql(u8, slice, "\x1b[A")) {
-                break :blk .up;
+            for ([_]struct { haystack: []const u8, input: State.Input }{
+                .{ .haystack = "c", .input = .commit },
+                .{ .haystack = "\x1b[B", .input = .down },
+                .{ .haystack = "q", .input = .quit },
+                .{ .haystack = "s", .input = .stage },
+                .{ .haystack = "\x09", .input = .toggle_expand },
+                .{ .haystack = "u", .input = .unstage },
+                .{ .haystack = "\x1b[A", .input = .up },
+            }) |possible_input| {
+                if (std.mem.eql(u8, slice, possible_input.haystack)) {
+                    break :blk possible_input.input;
+                }
             }
             break :blk null;
         };
@@ -146,6 +142,10 @@ pub const Interface = struct {
         try self.paint_delta(pretty, "Untracked files", repo_status.untracked, .untracked);
         try self.paint_delta(pretty, "Unstaged files", repo_status.unstaged, .unstaged);
         try self.paint_delta(pretty, "Staged files", repo_status.staged, .staged);
+
+        if (self.state.debug_output) |debug_output| {
+            try writer.print("{s}\n\r", .{debug_output});
+        }
     }
 
     fn paint_refs(self: *const Self, pretty: Pretty) !void {
@@ -241,6 +241,12 @@ pub const Interface = struct {
 const State = struct {
     const Self = @This();
 
+    allocator: std.mem.Allocator,
+
+    // NOTE: Since we can't use `std.debug.print`,
+    // we can use this field to perform debugging.
+    debug_output: ?[]const u8 = null,
+
     pos: usize = 0,
     section: Section = .head,
     untracked_expanded: bool = true,
@@ -248,6 +254,7 @@ const State = struct {
     staged_expanded: bool = true,
 
     const Input = enum {
+        commit,
         down,
         quit,
         stage,
@@ -263,9 +270,19 @@ const State = struct {
         staged,
     };
 
+    fn deinit(self: Self) void {
+        if (self.debug_output) |debug_output| {
+            self.allocator.free(debug_output);
+        }
+    }
+
     // TODO: When I stage/unstage, I don't check that the `pos` is valid
     // w.r.t. the number of remaining elements in the untracked/unstaged/staged list.
     fn handle_input(self: *Self, repo_status: *const RepoStatus, input: Input) !bool {
+        if (input == .commit and repo_status.staged.items.len > 0) {
+            try self.perform_commit(repo_status.repo);
+            return false;
+        }
         if (input == .quit) {
             return true;
         }
@@ -439,6 +456,70 @@ const State = struct {
             else => {},
         }
         return false;
+    }
+
+    fn perform_commit(self: *Self, repo: git.Repo) !void {
+        // TODO: how do I write the default .git/COMMIT_EDITMSG
+        // that `git commit` uses?
+        {
+            var file = try std.fs.cwd().createFile(".git/COMMIT_EDITMSG", .{});
+            defer file.close();
+            try file.writeAll("\n\n# This is a test fr ong\n");
+        }
+
+        {
+            var proc = std.process.Child.init(
+                &[_][]const u8{ "nvim", ".git/COMMIT_EDITMSG" },
+                self.allocator,
+            );
+            try proc.spawn();
+            _ = try proc.wait();
+            _ = try term.enter_raw_mode();
+        }
+
+        const contents = blk: {
+            var file = try std.fs.cwd().openFile(".git/COMMIT_EDITMSG", .{});
+            defer file.close();
+            break :blk try file.readToEndAlloc(self.allocator, std.math.maxInt(usize));
+        };
+        defer self.allocator.free(contents);
+
+        const commit_message = blk: {
+            var lines = std.ArrayList([]const u8).empty;
+            defer lines.deinit(self.allocator);
+
+            var i: usize = 0;
+            var last_contentful_line: ?usize = 0;
+            var line_iter = std.mem.splitScalar(u8, contents, '\n');
+            while (line_iter.next()) |line| {
+                const line_no_whitespace = std.mem.trim(u8, line, " \t");
+                try lines.append(self.allocator, line_no_whitespace);
+                if (line_no_whitespace.len > 0 and line_no_whitespace[0] != '#') {
+                    last_contentful_line = i;
+                }
+                i += 1;
+            }
+
+            const join_until = (last_contentful_line orelse return) + 1;
+            break :blk try std.mem.joinZ(
+                self.allocator,
+                "\n",
+                lines.items[0..join_until],
+            );
+        };
+        defer self.allocator.free(commit_message);
+
+        try self.set_debug_message(commit_message);
+
+        try repo.commit(commit_message);
+        // _ = repo;
+    }
+
+    fn set_debug_message(self: *Self, debug_message: []const u8) error{OutOfMemory}!void {
+        if (self.debug_output) |debug_output| {
+            self.allocator.free(debug_output);
+        }
+        self.debug_output = try self.allocator.dupe(u8, debug_message);
     }
 };
 
