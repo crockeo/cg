@@ -140,11 +140,39 @@ const Remote = struct {
     remote: ?*c.git_remote,
 
     pub fn push(self: Self) err.GitError!void {
+        var opts: c.git_push_options = undefined;
+        try err.wrap_git(c.git_push_options_init(&opts, c.GIT_PUSH_OPTIONS_VERSION));
+        opts.callbacks.credentials = Remote.credentials_callback;
+
         try err.wrap_git(c.git_remote_push(
             self.remote,
             null,
             null,
         ));
+    }
+
+    fn credentials_callback(
+        out: [*c][*c]c.git_credential,
+        url: [*c]const u8,
+        username_from_url: [*c]const u8,
+        allowed_types: c_uint,
+        payload: ?*anyopaque,
+    ) callconv(.c) c_int {
+        _ = url;
+        _ = payload;
+
+        if (allowed_types & c.GIT_CREDTYPE_SSH_KEY > 0) {
+            // TODO: look up SSH key based on Git/SSH config, if specified.
+            return c.git_cred_ssh_key_new(
+                out,
+                username_from_url,
+                "~/.ssh/id_ed25519.pub",
+                "~/.ssh/id_ed25519",
+                "",
+            );
+        }
+
+        return -1;
     }
 };
 
