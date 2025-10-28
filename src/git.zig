@@ -147,7 +147,7 @@ const Remote = struct {
         try err.wrap_git(c.git_remote_push(
             self.remote,
             null,
-            null,
+            &opts,
         ));
     }
 
