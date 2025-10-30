@@ -9,15 +9,32 @@ const term = @import("term.zig");
 // - When highlighting a line, make the background go to the end of the line.
 //   Don't just stop at the end of the text.
 
+const FileItem = struct {
+    path: []const u8,
+    status_name: []const u8,
+};
+
+fn change_type_name(change_type: git.Status.ChangeType) []const u8 {
+    return switch (change_type) {
+        .added => "added",
+        .copied => "copied",
+        .deleted => "deleted",
+        .file_type_change => "typechange",
+        .modified => "modified",
+        .renamed => "renamed",
+        .unmodified => "unmodified",
+        .updated_unmerged => "unmerged",
+    };
+}
+
 const RepoStatus = struct {
-    repo: git.Repo,
-    status_list: git.StatusList,
-    staged: std.ArrayList(git.DiffDelta),
-    unstaged: std.ArrayList(git.DiffDelta),
-    untracked: std.ArrayList(git.DiffDelta),
+    cli_status: *git.Status,
+    staged: std.ArrayList(FileItem),
+    unstaged: std.ArrayList(FileItem),
+    untracked: std.ArrayList(FileItem),
 
     fn deinit(self: *RepoStatus, allocator: std.mem.Allocator) void {
-        self.status_list.deinit();
+        self.cli_status.deinit();
         self.staged.deinit(allocator);
         self.unstaged.deinit(allocator);
         self.untracked.deinit(allocator);
@@ -29,18 +46,16 @@ pub const Interface = struct {
 
     allocator: std.mem.Allocator,
     original_termios: posix.termios,
-    repo: git.Repo,
     repo_status: ?RepoStatus,
     state: State,
     stdin: std.fs.File,
     stdout: std.fs.File,
 
-    pub fn init(allocator: std.mem.Allocator, repo: git.Repo) !*Self {
+    pub fn init(allocator: std.mem.Allocator) !*Self {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
             .original_termios = try term.enter_raw_mode(),
-            .repo = repo,
             .repo_status = null,
             .state = .{ .allocator = allocator },
             .stdin = std.fs.File.stdin(),
@@ -59,32 +74,67 @@ pub const Interface = struct {
     }
 
     pub fn update(self: *Self) !void {
-        const cli_status = try git.cli_status(self.allocator);
-        defer cli_status.deinit();
+        const cli_status = try git.status(self.allocator);
+        errdefer cli_status.deinit();
 
-        const status_list = try self.repo.status();
-        errdefer status_list.deinit();
-
-        var staged = std.ArrayList(git.DiffDelta).empty;
+        var staged = std.ArrayList(FileItem).empty;
         errdefer staged.deinit(self.allocator);
 
-        var unstaged = std.ArrayList(git.DiffDelta).empty;
+        var unstaged = std.ArrayList(FileItem).empty;
         errdefer unstaged.deinit(self.allocator);
 
-        var untracked = std.ArrayList(git.DiffDelta).empty;
+        var untracked = std.ArrayList(FileItem).empty;
         errdefer untracked.deinit(self.allocator);
 
-        var iter = status_list.iter();
-        while (try iter.next()) |entry| {
-            if (entry.staged()) |staged_diff| {
-                try staged.append(self.allocator, staged_diff);
-            }
-            if (entry.unstaged()) |unstaged_diff| {
-                if (unstaged_diff.status() == .Untracked) {
-                    try untracked.append(self.allocator, unstaged_diff);
-                } else {
-                    try unstaged.append(self.allocator, unstaged_diff);
-                }
+        for (cli_status.files) |file| {
+            switch (file) {
+                .changed => |changed| {
+                    const x_is_staged = changed.xy.x != .unmodified;
+                    const y_is_unstaged = changed.xy.y != .unmodified;
+
+                    if (x_is_staged) {
+                        try staged.append(self.allocator, .{
+                            .path = changed.path,
+                            .status_name = change_type_name(changed.xy.x),
+                        });
+                    }
+                    if (y_is_unstaged) {
+                        try unstaged.append(self.allocator, .{
+                            .path = changed.path,
+                            .status_name = change_type_name(changed.xy.y),
+                        });
+                    }
+                },
+                .copied_or_renamed => |copied_or_renamed| {
+                    const x_is_staged = copied_or_renamed.xy.x != .unmodified;
+                    const y_is_unstaged = copied_or_renamed.xy.y != .unmodified;
+
+                    if (x_is_staged) {
+                        try staged.append(self.allocator, .{
+                            .path = copied_or_renamed.path,
+                            .status_name = change_type_name(copied_or_renamed.xy.x),
+                        });
+                    }
+                    if (y_is_unstaged) {
+                        try unstaged.append(self.allocator, .{
+                            .path = copied_or_renamed.path,
+                            .status_name = change_type_name(copied_or_renamed.xy.y),
+                        });
+                    }
+                },
+                .unmerged => |unmerged| {
+                    try unstaged.append(self.allocator, .{
+                        .path = unmerged.path,
+                        .status_name = "unmerged",
+                    });
+                },
+                .untracked_file => |untracked_file| {
+                    try untracked.append(self.allocator, .{
+                        .path = untracked_file.path,
+                        .status_name = "untracked",
+                    });
+                },
+                .ignored_file => {},
             }
         }
 
@@ -92,8 +142,7 @@ pub const Interface = struct {
             repo_status.deinit(self.allocator);
         }
         self.repo_status = .{
-            .repo = self.repo,
-            .status_list = status_list,
+            .cli_status = cli_status,
             .staged = staged,
             .unstaged = unstaged,
             .untracked = untracked,
@@ -153,23 +202,38 @@ pub const Interface = struct {
     }
 
     fn paint_refs(self: *const Self, pretty: Pretty) !void {
-        const head = try self.repo.head();
-        defer head.deinit();
-
-        const commit = try head.commit();
-        defer commit.deinit();
+        const repo_status = self.repo_status orelse return error.NoRepoStatus;
+        const branch_head = repo_status.cli_status.branch_head orelse "(detached)";
 
         const base_style = self.highlight_style(.head, 0);
         try pretty.printStyled("  Head: ", base_style, .{});
+
+        // Get commit SHA and title from git log
+        var child = std.process.Child.init(
+            &[_][]const u8{ "git", "log", "-1", "--format=%h %s" },
+            self.allocator,
+        );
+        child.stdout_behavior = .Pipe;
+        try child.spawn();
+
+        const stdout = child.stdout orelse return error.NoStdout;
+        var buf: [1024]u8 = undefined;
+        const len = try stdout.read(&buf);
+        _ = try child.wait();
+
+        const output = std.mem.trim(u8, buf[0..len], &std.ascii.whitespace);
+        var it = std.mem.splitScalar(u8, output, ' ');
+        const sha = it.next() orelse "";
+        const title = it.rest();
+
         try pretty.printStyled(
             "{s} ",
             base_style.add(.{ .foreground = .sky }),
-            .{commit.sha()[0..8]},
+            .{sha},
         );
         {
-            const branch_name = try head.branch_name();
             const style = blk: {
-                if (std.mem.startsWith(u8, branch_name, "origin/")) {
+                if (std.mem.startsWith(u8, branch_head, "origin/")) {
                     break :blk base_style.add(.{ .foreground = .green });
                 }
                 break :blk base_style.add(.{ .foreground = .peach });
@@ -177,13 +241,13 @@ pub const Interface = struct {
             try pretty.printStyled(
                 "{s} ",
                 style,
-                .{branch_name},
+                .{branch_head},
             );
         }
         try pretty.printStyled(
             "{s}\n\r\n\r",
             base_style,
-            .{commit.title()},
+            .{title},
         );
     }
 
@@ -191,7 +255,7 @@ pub const Interface = struct {
         self: *const Self,
         pretty: Pretty,
         header: []const u8,
-        deltas: std.ArrayList(git.DiffDelta),
+        items: std.ArrayList(FileItem),
         section: State.Section,
     ) !void {
         const expanded = switch (section) {
@@ -209,19 +273,19 @@ pub const Interface = struct {
                 base_style.add(.{ .bold = true, .foreground = .mauve }),
                 .{header},
             );
-            try pretty.printStyled(" ({d})\n\r", base_style, .{deltas.items.len});
+            try pretty.printStyled(" ({d})\n\r", base_style, .{items.items.len});
         }
 
         if (expanded) {
-            for (1.., deltas.items) |i, delta| {
+            for (1.., items.items) |i, item| {
                 const base_style = self.highlight_style(section, i);
                 try pretty.printStyled("> ", base_style, .{});
                 try pretty.printStyled(
                     "{s}",
                     base_style.add(.{ .bold = true, .foreground = .blue }),
-                    .{delta.status().name()},
+                    .{item.status_name},
                 );
-                try pretty.printStyled("    {s}\n\r", base_style, .{delta.diff_delta.*.new_file.path});
+                try pretty.printStyled("    {s}\n\r", base_style, .{item.path});
             }
         }
         try pretty.print("\n\r", .{});
@@ -285,12 +349,12 @@ const State = struct {
     // w.r.t. the number of remaining elements in the untracked/unstaged/staged list.
     fn handle_input(self: *Self, repo_status: *const RepoStatus, input: Input) !bool {
         if (input == .commit and repo_status.staged.items.len > 0) {
-            try self.perform_commit(repo_status.repo);
+            try self.perform_commit();
             return false;
         }
         if (input == .push) {
             // TODO: do this only when we have unpushed commits
-            try self.perform_push(repo_status.repo);
+            try self.perform_push();
             return false;
         }
         if (input == .quit) {
@@ -332,16 +396,19 @@ const State = struct {
                 }
             },
             .stage => {
-                if (self.pos == 0) {
-                    var paths = try self.allocator.alloc([:0]const u8, repo_status.untracked.items.len);
+                if (self.pos == 0 and repo_status.untracked.items.len > 0) {
+                    var paths = try self.allocator.alloc([]const u8, repo_status.untracked.items.len);
                     defer self.allocator.free(paths);
-                    for (0.., repo_status.untracked.items) |i, delta| {
-                        paths[i] = delta.path();
+                    for (0.., repo_status.untracked.items) |i, item| {
+                        paths[i] = item.path;
                     }
                     try git.stage(self.allocator, paths);
-                } else {
-                    const delta = repo_status.untracked.items[self.pos - 1];
-                    try git.stage(self.allocator, &[_][:0]const u8{delta.path()});
+                } else if (self.pos > 0) {
+                    const item = repo_status.untracked.items[self.pos - 1];
+                    try git.stage(self.allocator, &[_][]const u8{item.path});
+                    if (self.pos == repo_status.untracked.items.len) {
+                        self.pos -= 1;
+                    }
                 }
             },
             .toggle_expand => {
@@ -379,18 +446,20 @@ const State = struct {
                 }
             },
             .stage => {
-                const idx = try repo_status.repo.index();
-                defer idx.deinit();
-
-                if (self.pos == 0) {
-                    for (repo_status.unstaged.items) |delta| {
-                        try idx.stage(delta);
+                if (self.pos == 0 and repo_status.unstaged.items.len > 0) {
+                    var paths = try self.allocator.alloc([]const u8, repo_status.unstaged.items.len);
+                    defer self.allocator.free(paths);
+                    for (0.., repo_status.unstaged.items) |i, item| {
+                        paths[i] = item.path;
                     }
-                } else {
-                    const delta = repo_status.unstaged.items[self.pos - 1];
-                    try idx.stage(delta);
+                    try git.stage(self.allocator, paths);
+                } else if (self.pos > 0) {
+                    const item = repo_status.unstaged.items[self.pos - 1];
+                    try git.stage(self.allocator, &[_][]const u8{item.path});
+                    if (self.pos == repo_status.unstaged.items.len) {
+                        self.pos -= 1;
+                    }
                 }
-                try idx.write();
             },
             .toggle_expand => {
                 self.unstaged_expanded = !self.unstaged_expanded;
@@ -436,18 +505,20 @@ const State = struct {
                 }
             },
             .unstage => {
-                const idx = try repo_status.repo.index();
-                defer idx.deinit();
-
-                if (self.pos == 0) {
-                    for (repo_status.staged.items) |delta| {
-                        try idx.unstage_file(delta.path());
+                if (self.pos == 0 and repo_status.staged.items.len > 0) {
+                    var paths = try self.allocator.alloc([]const u8, repo_status.staged.items.len);
+                    defer self.allocator.free(paths);
+                    for (0.., repo_status.staged.items) |i, item| {
+                        paths[i] = item.path;
                     }
-                } else {
-                    const delta = repo_status.staged.items[self.pos - 1];
-                    try idx.unstage_file(delta.path());
+                    try git.unstage(self.allocator, paths);
+                } else if (self.pos > 0) {
+                    const item = repo_status.staged.items[self.pos - 1];
+                    try git.unstage(self.allocator, &[_][]const u8{item.path});
+                    if (self.pos == repo_status.staged.items.len) {
+                        self.pos -= 1;
+                    }
                 }
-                try idx.write();
             },
             .up => {
                 if (self.pos > 0) {
@@ -467,14 +538,12 @@ const State = struct {
         return false;
     }
 
-    fn perform_commit(self: *Self, repo: git.Repo) !void {
-        _ = repo;
+    fn perform_commit(self: *Self) !void {
         try git.commit(self.allocator);
         _ = try term.enter_raw_mode();
     }
 
-    fn perform_push(self: *Self, repo: git.Repo) !void {
-        _ = repo;
+    fn perform_push(self: *Self) !void {
         try git.push(self.allocator, "origin", "main");
     }
 
