@@ -13,7 +13,8 @@ Look sparse? I started creating after building out some of the basic features.
 - Features
     - [ ] View a diff (tab expand deltas)
     - [x] Commit
-    - [ ] Push
+    - [x] Push
+    - [ ] Open GitHub PR for current branch
 - Speed
     - [ ] Profile on large repo (e.g. $JOB monolith).
     - [ ] Some ideas:
