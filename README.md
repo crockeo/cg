@@ -14,7 +14,19 @@ Look sparse? I started creating after building out some of the basic features.
     - [ ] View a diff (tab expand deltas)
     - [x] Commit
     - [x] Push
+    - [ ] Pull
+    - [ ] Create new branch
+        - Receive longform user input
     - [ ] Open GitHub PR for current branch
+    - [ ] Track unmerged commits
+    - [ ] Show branch upstream (if exists) when rendering
+    - [ ] Render stashes
+    - [ ] Support complex inputs
+        - [ ] Support multi-character inputs
+    - [ ] Stream output from git commands into a terminal
+        - E.g. when `git commit`-ing, I want to see pre-commit output.
+        - Or when `git push`-ing, I want to see it pushing to the remote.
+        - Or when `git pull`-ing, I want to see progress.
 - Speed
     - [ ] Profile on large repo (e.g. $JOB monolith).
     - [ ] Some ideas:
