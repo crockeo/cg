@@ -520,9 +520,8 @@ const State = struct {
     }
 
     fn perform_push(self: *Self, repo: git.Repo) !void {
-        _ = self;
-        const remote = try repo.remote("origin");
-        try remote.push();
+        _ = repo;
+        try git.push(self.allocator, "origin", "main");
     }
 
     fn set_debug_message(self: *Self, debug_message: []const u8) error{OutOfMemory}!void {

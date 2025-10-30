@@ -6,6 +6,12 @@ const c = @cImport({
 
 const err = @import("err.zig");
 
+pub fn push(allocator: std.mem.Allocator, remote: []const u8, branch: []const u8) !void {
+    var child = std.process.Child.init(&[_][]const u8{ "git", "push", remote, branch }, allocator);
+    try child.spawn();
+    _ = try child.wait();
+}
+
 pub const Lib = struct {
     const Self = @This();
 
