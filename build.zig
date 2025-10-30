@@ -9,8 +9,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    mod.linkSystemLibrary("curses", .{});
-    mod.linkSystemLibrary("git2", .{});
 
     const exe = b.addExecutable(.{
         .name = "cg",

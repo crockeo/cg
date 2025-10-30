@@ -1,8 +1,4 @@
 const std = @import("std");
-const c = @cImport({
-    @cInclude("git2.h");
-    @cInclude("string.h");
-});
 
 const err = @import("err.zig");
 

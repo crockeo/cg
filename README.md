@@ -32,7 +32,7 @@ Look sparse? I started creating after building out some of the basic features.
 
 ## Contributing
 
-Requires `libgit2`, `ncurses`, and `zig`:
+Requires `zig` and the `git` CLI:
 
 ```
 zig build run
