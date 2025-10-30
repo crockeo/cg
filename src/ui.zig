@@ -59,6 +59,9 @@ pub const Interface = struct {
     }
 
     pub fn update(self: *Self) !void {
+        const cli_status = try git.cli_status(self.allocator);
+        defer cli_status.deinit();
+
         const status_list = try self.repo.status();
         errdefer status_list.deinit();
 

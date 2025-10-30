@@ -36,6 +36,151 @@ pub fn stage(allocator: std.mem.Allocator, paths: []const []const u8) !void {
     _ = try child.wait();
 }
 
+// TODO: modify the naming of this once we get rid of the old status stuff.
+const CLIStatus = struct {
+    const Self = @This();
+
+    const ChangeType = enum {
+        added,
+        copied,
+        deleted,
+        file_type_change,
+        modified,
+        renamed,
+        unmodified,
+        updated_unmerged,
+    };
+
+    const XY = struct {
+        x: ChangeType,
+        y: ChangeType,
+    };
+
+    const ChangedFile = struct {
+        xy: XY,
+        submodule_state: []const u8,
+        mode_head: []const u8,
+        mode_index: []const u8,
+        mode_worktree: []const u8,
+        object_name_head: []const u8,
+        object_name_index: []const u8,
+        path: []const u8,
+    };
+    const CopiedOrRenamedFile = struct {
+        const Score = union {
+            copied: u8,
+            renamed: u8,
+        };
+        xy: XY,
+        submodule_state: []const u8,
+        mode_head: []const u8,
+        mode_index: []const u8,
+        mode_worktree: []const u8,
+        object_name_head: []const u8,
+        object_name_index: []const u8,
+        score: Score,
+        path: []const u8,
+        original_path: []const u8,
+    };
+    const UnmergedFile = struct {
+        xy: XY,
+        submodule_state: []const u8,
+        mode_stage_1: []const u8,
+        mode_stage_2: []const u8,
+        mode_stage_3: []const u8,
+        mode_worktree: []const u8,
+        object_name_stage_1: []const u8,
+        object_name_stage_2: []const u8,
+        object_name_stage_3: []const u8,
+        path: []const u8,
+    };
+    const UntrackedFile = struct {
+        path: []const u8,
+    };
+    const IgnoredFile = struct {
+        path: []const u8,
+    };
+    const File = union {
+        changed: ChangedFile,
+        copied_or_renamed: CopiedOrRenamedFile,
+        unmerged: UnmergedFile,
+        untracked_file: UntrackedFile,
+        ignored_file: IgnoredFile,
+    };
+
+    allocator: std.mem.Allocator,
+    contents: []const u8,
+    files: []const File,
+
+    // These are not values themselves,
+    // but rather pointers into "contents"
+    branch_head: ?[]const u8 = null,
+    branch_upstream: ?[]const u8 = null,
+
+    pub fn deinit(self: *Self) void {
+        self.allocator.free(self.contents);
+        self.allocator.free(self.files);
+        self.allocator.destroy(self);
+    }
+};
+
+pub fn cli_status(allocator: std.mem.Allocator) !*CLIStatus {
+    const stat = try allocator.create(CLIStatus);
+    stat.* = .{
+        .allocator = allocator,
+        .contents = undefined,
+        .files = undefined,
+    };
+    errdefer allocator.destroy(stat);
+
+    var child = std.process.Child.init(
+        &[_][]const u8{ "git", "status", "--branch", "--porcelain=v2" },
+        allocator,
+    );
+    child.stdout_behavior = .Pipe;
+    try child.spawn();
+
+    stat.*.contents = blk: {
+        var buf: [1024]u8 = undefined;
+        var stdout = child.stdout orelse @panic("Logic error.");
+
+        var allocating_writer = std.io.Writer.Allocating.init(allocator);
+        errdefer allocating_writer.deinit();
+
+        while (true) {
+            const read = try stdout.read(&buf);
+            if (read == 0) {
+                break;
+            }
+            try allocating_writer.writer.writeAll(buf[0..read]);
+        }
+
+        break :blk try allocating_writer.toOwnedSlice();
+    };
+    errdefer allocator.free(stat.*.contents);
+    _ = try child.wait();
+
+    var files = std.ArrayList(CLIStatus.File).empty;
+    errdefer files.deinit(allocator);
+
+    var lines = std.mem.splitScalar(u8, stat.*.contents, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "# branch.head")) {
+            stat.*.branch_head = line["branch.head".len..];
+        }
+        if (std.mem.startsWith(u8, line, "# branch.upstream")) {
+            stat.*.branch_upstream = line["branch.upstream".len..];
+        }
+
+        var segments = std.mem.splitScalar(u8, line, ' ');
+        const category = segments.next() orelse continue;
+        if (std.mem.eql(u8, category, "1")) {} else if (std.mem.eql(u8, category, "2")) {} else if (std.mem.eql(u8, category, "u")) {} else if (std.mem.eql(u8, category, "?")) {} else if (std.mem.eql(u8, category, "!")) {}
+    }
+
+    stat.*.files = try files.toOwnedSlice(allocator);
+    return stat;
+}
+
 pub fn unstage(allocator: std.mem.Allocator, paths: []const []const u8) !void {
     const args = try std.mem.concat(allocator, []const []const u8, &[_][]const []const u8{
         &[_][]const u8{ "git", "reset", "HEAD", "--" },
