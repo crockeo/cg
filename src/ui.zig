@@ -329,18 +329,17 @@ const State = struct {
                 }
             },
             .stage => {
-                const idx = try repo_status.repo.index();
-                defer idx.deinit();
-
                 if (self.pos == 0) {
-                    for (repo_status.untracked.items) |delta| {
-                        try idx.stage(delta);
+                    var paths = try self.allocator.alloc([:0]const u8, repo_status.untracked.items.len);
+                    defer self.allocator.free(paths);
+                    for (0.., repo_status.untracked.items) |i, delta| {
+                        paths[i] = delta.path();
                     }
+                    try git.stage(self.allocator, paths);
                 } else {
                     const delta = repo_status.untracked.items[self.pos - 1];
-                    try idx.stage(delta);
+                    try git.stage(self.allocator, &[_][:0]const u8{delta.path()});
                 }
-                try idx.write();
             },
             .toggle_expand => {
                 self.untracked_expanded = !self.untracked_expanded;
@@ -466,57 +465,9 @@ const State = struct {
     }
 
     fn perform_commit(self: *Self, repo: git.Repo) !void {
-        // TODO: how do I write the default .git/COMMIT_EDITMSG
-        // that `git commit` uses?
-        {
-            var file = try std.fs.cwd().createFile(".git/COMMIT_EDITMSG", .{});
-            defer file.close();
-            try file.writeAll("\n\n# This is a test fr ong\n");
-        }
-
-        {
-            var proc = std.process.Child.init(
-                &[_][]const u8{ "nvim", ".git/COMMIT_EDITMSG" },
-                self.allocator,
-            );
-            try proc.spawn();
-            _ = try proc.wait();
-            _ = try term.enter_raw_mode();
-        }
-
-        const contents = blk: {
-            var file = try std.fs.cwd().openFile(".git/COMMIT_EDITMSG", .{});
-            defer file.close();
-            break :blk try file.readToEndAlloc(self.allocator, std.math.maxInt(usize));
-        };
-        defer self.allocator.free(contents);
-
-        const commit_message = blk: {
-            var lines = std.ArrayList([]const u8).empty;
-            defer lines.deinit(self.allocator);
-
-            var i: usize = 0;
-            var last_contentful_line: ?usize = 0;
-            var line_iter = std.mem.splitScalar(u8, contents, '\n');
-            while (line_iter.next()) |line| {
-                const line_no_whitespace = std.mem.trim(u8, line, " \t");
-                try lines.append(self.allocator, line_no_whitespace);
-                if (line_no_whitespace.len > 0 and line_no_whitespace[0] != '#') {
-                    last_contentful_line = i;
-                }
-                i += 1;
-            }
-
-            const join_until = (last_contentful_line orelse return) + 1;
-            break :blk try std.mem.joinZ(
-                self.allocator,
-                "\n",
-                lines.items[0..join_until],
-            );
-        };
-        defer self.allocator.free(commit_message);
-
-        try repo.commit(commit_message);
+        _ = repo;
+        try git.commit(self.allocator);
+        _ = try term.enter_raw_mode();
     }
 
     fn perform_push(self: *Self, repo: git.Repo) !void {

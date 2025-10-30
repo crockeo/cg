@@ -6,8 +6,44 @@ const c = @cImport({
 
 const err = @import("err.zig");
 
+pub fn commit(allocator: std.mem.Allocator) !void {
+    var child = std.process.Child.init(
+        &[_][]const u8{ "git", "commit" },
+        allocator,
+    );
+    try child.spawn();
+    _ = try child.wait();
+}
+
 pub fn push(allocator: std.mem.Allocator, remote: []const u8, branch: []const u8) !void {
-    var child = std.process.Child.init(&[_][]const u8{ "git", "push", remote, branch }, allocator);
+    var child = std.process.Child.init(
+        &[_][]const u8{ "git", "push", remote, branch },
+        allocator,
+    );
+    try child.spawn();
+    _ = try child.wait();
+}
+
+pub fn stage(allocator: std.mem.Allocator, paths: []const []const u8) !void {
+    const args = try std.mem.concat(allocator, []const u8, &[_][]const []const u8{
+        &[_][]const u8{ "git", "add", "--" },
+        paths,
+    });
+    defer allocator.free(args);
+
+    var child = std.process.Child.init(args, allocator);
+    try child.spawn();
+    _ = try child.wait();
+}
+
+pub fn unstage(allocator: std.mem.Allocator, paths: []const []const u8) !void {
+    const args = try std.mem.concat(allocator, []const []const u8, &[_][]const []const u8{
+        &[_][]const u8{ "git", "reset", "HEAD", "--" },
+        paths,
+    });
+    defer allocator.free(args);
+
+    var child = std.process.Child(args, allocator);
     try child.spawn();
     _ = try child.wait();
 }
