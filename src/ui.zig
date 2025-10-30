@@ -544,6 +544,8 @@ const State = struct {
     }
 
     fn perform_push(self: *Self) !void {
+        // TODO: infer this from the current status if possible,
+        // or else don't specify the branch
         try git.push(self.allocator, "origin", "main");
     }
 
