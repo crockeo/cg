@@ -28,6 +28,7 @@ Look sparse? I started creating after building out some of the basic features.
         - E.g. when `git commit`-ing, I want to see pre-commit output.
         - Or when `git push`-ing, I want to see it pushing to the remote.
         - Or when `git pull`-ing, I want to see progress.
+    - [ ] Scrolling
 - Speed
     - [ ] Profile on large repo (e.g. $JOB monolith).
     - [ ] Some ideas:
