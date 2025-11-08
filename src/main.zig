@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const input = @import("input.zig");
+const queue = @import("queue.zig");
 const ui = @import("ui.zig");
 
 const Application = struct {
@@ -37,7 +39,10 @@ const Application = struct {
 const Background = struct {
     const Self = @This();
 
+    const Job = union {};
+
     allocator: std.mem.Allocator,
+    job_queue: *queue.Queue(Job),
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
@@ -53,7 +58,13 @@ const Background = struct {
 const Foreground = struct {
     const Self = @This();
 
+    const Event = union {
+        input: input.Input,
+        repo_update: struct {},
+    };
+
     allocator: std.mem.Allocator,
+    event_queue: queue.Queue(Event),
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
