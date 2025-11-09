@@ -111,20 +111,16 @@ const App = struct {
                     self.allocator.free(paths);
                 },
                 .commit => {
-                    // Exit raw mode so editor works properly
                     term.restore(self.original_termios) catch {
                         @panic("job_thread_main failed to restore terminal mode");
                     };
-
-                    // Run commit (opens editor, runs pre-commit hooks)
                     git.commit(self.allocator) catch {
                         @panic("job_thread_main failed to commit");
                     };
-
-                    // Re-enter raw mode after commit completes
                     _ = term.enter_raw_mode() catch {
                         @panic("job_thread_main failed to re-enter raw mode after commit");
                     };
+                    self.paused.set(false);
                 },
                 .push => |push_info| {
                     git.push(self.allocator, push_info.remote, push_info.branch) catch {
