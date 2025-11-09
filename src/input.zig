@@ -59,8 +59,15 @@ pub const Input = struct {
         if (slice.len == 1) {
             const byte = slice[0];
 
+            // Special keys that need to be handled before Ctrl combinations
+            if (byte == 0x09) { // Tab
+                return .{ .key = .Tab, .modifiers = .{} };
+            }
+            if (byte == 0x0D) { // Enter
+                return .{ .key = .Enter, .modifiers = .{} };
+            }
+
             // Ctrl+A through Ctrl+Z (0x01-0x1A)
-            // Note: Tab (0x09) is Ctrl+I, Enter (0x0D) is Ctrl+M
             if (byte >= 0x01 and byte <= 0x1A) {
                 const key = @as(Key, @enumFromInt(@intFromEnum(Key.A) + (byte - 0x01)));
                 return .{
