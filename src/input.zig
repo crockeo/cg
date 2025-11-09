@@ -6,7 +6,7 @@ pub fn read(stdin: std.fs.File) !Input {
     return Input.from_slice(buf[0..len]);
 }
 
-const Input = enum {
+pub const Input = enum {
     Unknown,
 
     fn from_slice(slice: []const u8) Input {

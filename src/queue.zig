@@ -1,6 +1,6 @@
 const std = @import("std");
 
-fn Queue(comptime T: type) type {
+pub fn Queue(comptime T: type) type {
     return struct {
         const Self = @This();
 
@@ -10,7 +10,7 @@ fn Queue(comptime T: type) type {
         queue: std.ArrayList(T),
 
         pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!*Self {
-            const self = allocator.create(Self);
+            const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
 
             self.* = .{

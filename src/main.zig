@@ -4,79 +4,6 @@ const input = @import("input.zig");
 const queue = @import("queue.zig");
 const ui = @import("ui.zig");
 
-const Application = struct {
-    const Self = @This();
-
-    allocator: std.mem.Allocator,
-    background: Background,
-    foreground: Foreground,
-    repo_state: ?RepoState,
-    user_state: UserState,
-
-    pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!*Self {
-        const self = try allocator.create(Self);
-        self.* = .{
-            .allocator = allocator,
-            .background = Background.init(allocator),
-            .foreground = Foreground.init(allocator),
-            .repo_state = null,
-            .user_state = UserState.init(allocator),
-        };
-        return self;
-    }
-
-    pub fn deinit(self: *Self) void {
-        self.background.deinit();
-        self.foreground.deinit();
-        if (self.repo_state) |*repo_state| {
-            repo_state.deinit();
-        }
-        self.user_state.deinit();
-        self.allocator.destroy(self);
-    }
-};
-
-const Background = struct {
-    const Self = @This();
-
-    const Job = union {};
-
-    allocator: std.mem.Allocator,
-    job_queue: *queue.Queue(Job),
-
-    pub fn init(allocator: std.mem.Allocator) Self {
-        return .{
-            .allocator = allocator,
-        };
-    }
-
-    pub fn deinit(self: *Self) void {
-        _ = self;
-    }
-};
-
-const Foreground = struct {
-    const Self = @This();
-
-    const Event = union {
-        input: input.Input,
-        repo_update: struct {},
-    };
-
-    allocator: std.mem.Allocator,
-    event_queue: queue.Queue(Event),
-
-    pub fn init(allocator: std.mem.Allocator) Self {
-        return .{
-            .allocator = allocator,
-        };
-    }
-
-    pub fn deinit(self: *Self) void {
-        _ = self;
-    }
-};
-
 const RepoState = struct {
     const Self = @This();
 
@@ -109,22 +36,70 @@ const UserState = struct {
     }
 };
 
+const Event = union(enum) {
+    input: input.Input,
+    repo_state: RepoState,
+};
+
+const Job = union(enum) {};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const app = try Application.init(allocator);
-    defer app.deinit();
+    var event_queue = try queue.Queue(Event).init(allocator);
+    defer event_queue.deinit();
 
-    var interface = try ui.Interface.init(allocator);
-    defer interface.deinit();
+    var job_queue = try queue.Queue(Job).init(allocator);
+    defer job_queue.deinit();
+
+    _ = try std.Thread.spawn(
+        .{ .allocator = allocator },
+        input_thread_main,
+        .{event_queue},
+    );
+    _ = try std.Thread.spawn(
+        .{ .allocator = allocator },
+        refresh_thread_main,
+        .{event_queue},
+    );
+    _ = try std.Thread.spawn(
+        .{ .allocator = allocator },
+        job_thread_main,
+        .{ event_queue, job_queue },
+    );
 
     while (true) {
-        try interface.update();
-        try interface.paint();
-        if (try interface.handle_input()) {
-            break;
+        const event = event_queue.get();
+        switch (event) {
+            .input => |input_evt| {
+                _ = input_evt;
+            },
+            .repo_state => |repo_state_evt| {
+                _ = repo_state_evt;
+            },
         }
     }
+}
+
+fn input_thread_main(event_queue: *queue.Queue(Event)) void {
+    const stdin = std.fs.File.stdin();
+    while (true) {
+        const input_evt = input.read(stdin) catch {
+            @panic("input_thread_main error while reading input.");
+        };
+        event_queue.put(.{ .input = input_evt }) catch {
+            @panic("input_thread_main OOM");
+        };
+    }
+}
+
+fn refresh_thread_main(event_queue: *queue.Queue(Event)) void {
+    _ = event_queue;
+}
+
+fn job_thread_main(event_queue: *queue.Queue(Event), job_queue: *queue.Queue(Job)) void {
+    _ = event_queue;
+    _ = job_queue;
 }
