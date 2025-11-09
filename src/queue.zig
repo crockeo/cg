@@ -24,6 +24,11 @@ pub fn Queue(comptime T: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            if (@hasDecl(T, "deinit")) {
+                for (self.queue.items) |*item| {
+                    item.deinit();
+                }
+            }
             self.queue.deinit(self.allocator);
             self.allocator.destroy(self);
         }
@@ -114,10 +119,12 @@ pub fn LockstepQueue(comptime T: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            for (self.queue.items) |item| {
-                // TODO: destroy it if it has a deinit method?
-                _ = item;
+            if (@hasDecl(T, "deinit")) {
+                for (self.queue.items) |*item| {
+                    item.deinit();
+                }
             }
+            self.queue.deinit(self.allocator);
             self.allocator.destroy(self);
         }
 
