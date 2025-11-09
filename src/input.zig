@@ -7,8 +7,14 @@ pub fn read(stdin: std.fs.File) !Input {
 }
 
 pub const Input = struct {
+    const Self = @This();
+
     key: Key,
-    modifiers: Modifiers,
+    modifiers: Modifiers = .{},
+
+    pub fn eql(self: Self, other: Input) bool {
+        return self.key == other.key and self.modifiers.eql(other.modifiers);
+    }
 
     fn from_slice(slice: []const u8) Input {
         if (slice.len == 0) {
@@ -156,7 +162,13 @@ pub const Key = enum {
 };
 
 pub const Modifiers = struct {
-    shift: bool = false,
-    ctrl: bool = false,
+    const Self = @This();
+
     alt: bool = false,
+    ctrl: bool = false,
+    shift: bool = false,
+
+    pub fn eql(self: Self, other: Self) bool {
+        return self.alt == other.alt and self.ctrl == other.ctrl and self.shift == other.shift;
+    }
 };
