@@ -49,7 +49,7 @@ const App = struct {
             .job_queue = job_queue,
             .original_termios = original_termios,
             .paused = .{},
-            .ready_for_input = .{ .is_set = true },
+            .ready_for_input = .{},
         };
         return self;
     }
@@ -66,10 +66,7 @@ const App = struct {
     fn input_thread_main(self: *Self) void {
         const stdin = std.fs.File.stdin();
         while (true) {
-            // Wait for main thread to signal it's ready for input
-            self.ready_for_input.wait(true);
-            self.ready_for_input.set(false);
-
+            self.ready_for_input.consume();
             const input_evt = input.read(stdin) catch {
                 @panic("input_thread_main error while reading input.");
             };
@@ -83,17 +80,17 @@ const App = struct {
     /// updating the current state of the Git repo,
     /// in cases where the user makes no inputs.
     fn refresh_thread_main(self: *Self) void {
-        // while (true) {
-        self.paused.wait(false);
-        const git_status = git.status(self.allocator) catch {
-            @panic("refresh_thread_main failed to get new status");
-        };
-        errdefer git_status.deinit();
-        self.event_queue.put(.{ .git_status = git_status }) catch {
-            @panic("refresh_thread_main OOM");
-        };
-        std.Thread.sleep(std.time.ns_per_s * 5);
-        // }
+        while (true) {
+            self.paused.wait(false);
+            const git_status = git.status(self.allocator) catch {
+                @panic("refresh_thread_main failed to get new status");
+            };
+            errdefer git_status.deinit();
+            self.event_queue.put(.{ .git_status = git_status }) catch {
+                @panic("refresh_thread_main OOM");
+            };
+            std.Thread.sleep(std.time.ns_per_s * 5);
+        }
     }
 
     /// `job_thread_main` accepts jobs from the main thread
@@ -206,14 +203,16 @@ pub fn main() !void {
 
                 const repo_state = &(curr_repo_state orelse {
                     // No repo state yet, signal ready for next input
-                    app.ready_for_input.set(true);
                     continue;
                 });
 
                 if (input_evt.eql(.{ .key = .C }) and repo_state.staged.items.len > 0) {
                     try app.job_queue.put(.commit);
                     app.paused.set(true);
-                } else if (input_evt.eql(.{ .key = .P })) {
+                    continue;
+                }
+
+                if (input_evt.eql(.{ .key = .P })) {
                     try app.job_queue.put(.{ .push = .{ .remote = "origin", .branch = "main" } });
                 } else {
                     switch (user_state.section) {

@@ -21,4 +21,13 @@ pub const Event = struct {
             self.cond.wait(&self.mut);
         }
     }
+
+    pub fn consume(self: *Self) void {
+        self.mut.lock();
+        defer self.mut.unlock();
+        while (!self.is_set) {
+            self.cond.wait(&self.mut);
+        }
+        self.is_set = false;
+    }
 };
