@@ -9,7 +9,7 @@ const term = @import("term.zig");
 // - When highlighting a line, make the background go to the end of the line.
 //   Don't just stop at the end of the text.
 
-const FileItem = struct {
+pub const FileItem = struct {
     path: []const u8,
     status_name: []const u8,
 };
@@ -279,7 +279,6 @@ fn prefix(expanded: bool) []const u8 {
     }
     return ">";
 }
-
 
 const Pretty = struct {
     const Self = @This();

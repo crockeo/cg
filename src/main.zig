@@ -13,8 +13,8 @@ const LoopEvent = union(enum) {
 };
 
 const Job = union(enum) {
-    stage: [][]const u8,
-    unstage: [][]const u8,
+    stage: []const []const u8,
+    unstage: []const []const u8,
     commit: void,
     push: struct {
         remote: []const u8,
@@ -28,6 +28,7 @@ const App = struct {
     allocator: std.mem.Allocator,
     event_queue: *queue.BoundedQueue(LoopEvent),
     git_status: ?*git.Status,
+    input_map: *input.InputMap(*Self),
     job_queue: *queue.Queue(Job),
     original_termios: std.posix.termios,
     paused: event.Event,
@@ -49,6 +50,7 @@ const App = struct {
         self.* = .{
             .allocator = allocator,
             .event_queue = event_queue,
+            .input_map = try .init(allocator),
             .job_queue = job_queue,
             .original_termios = original_termios,
             .paused = .{},
@@ -65,6 +67,7 @@ const App = struct {
         if (self.git_status) |git_status| {
             git_status.deinit();
         }
+        self.input_map.deinit();
         if (self.repo_state) |*repo_state| {
             repo_state.deinit(self.allocator);
         }
@@ -178,6 +181,32 @@ pub fn main() !void {
         .{app},
     );
 
+    try app.input_map.add(
+        &[_]input.Input{.{ .key = .Up }},
+        arrow_up_handler,
+    );
+    try app.input_map.add(
+        &[_]input.Input{.{ .key = .Down }},
+        arrow_down_handler,
+    );
+    try app.input_map.add(
+        &[_]input.Input{ .{ .key = .C }, .{ .key = .C } },
+        commit_handler,
+    );
+    try app.input_map.add(
+        &[_]input.Input{.{ .key = .S }},
+        stage_handler,
+    );
+    try app.input_map.add(
+        &[_]input.Input{.{ .key = .Tab }},
+        toggle_expand_handler,
+    );
+    try app.input_map.add(
+        &[_]input.Input{.{ .key = .U }},
+        unstage_handler,
+    );
+
+    var curr_input_map: *input.InputMap(*App) = app.input_map;
     const stdout = std.fs.File.stdout();
     while (true) {
         app.paused.wait(false);
@@ -193,34 +222,28 @@ pub fn main() !void {
                     input_evt.eql(.{ .key = .Q }) or
                     input_evt.eql(.{ .key = .C, .modifiers = .{ .ctrl = true } }))
                 {
-                    break;
-                }
-
-                const repo_state = &(app.repo_state orelse {
-                    // No repo state yet, signal ready for next input
-                    app.ready_for_input.set(true);
-                    continue;
-                });
-
-                if (input_evt.eql(.{ .key = .C }) and repo_state.staged.items.len > 0) {
-                    try app.job_queue.put(.commit);
-                    app.paused.set(true);
-                    continue;
-                }
-
-                if (input_evt.eql(.{ .key = .P })) {
-                    try app.job_queue.put(.{ .push = .{ .remote = "origin", .branch = "main" } });
+                    if (curr_input_map == app.input_map) {
+                        break;
+                    }
+                    curr_input_map = app.input_map;
                     app.ready_for_input.set(true);
                     continue;
                 }
 
-                switch (app.user_state.section) {
-                    .head => try handle_head_input(app, input_evt),
-                    .untracked => try handle_untracked_input(app, input_evt),
-                    .unstaged => try handle_unstaged_input(app, input_evt),
-                    .staged => try handle_staged_input(app, input_evt),
+                const next_input_map = curr_input_map.get(input_evt) orelse {
+                    curr_input_map = app.input_map;
+                    app.ready_for_input.set(true);
+                    continue;
+                };
+
+                var resume_input = true;
+                if (next_input_map.handler) |handler| {
+                    const result = try handler(app);
+                    resume_input = result.resume_input;
                 }
-                app.ready_for_input.set(true);
+                if (resume_input) {
+                    app.ready_for_input.set(true);
+                }
             },
             .git_status => |git_status| {
                 if (app.git_status) |last_git_status| {
@@ -239,174 +262,174 @@ pub fn main() !void {
     }
 }
 
-fn handle_head_input(app: *App, input_evt: input.Input) !void {
-    if (input_evt.modifiers.ctrl or input_evt.modifiers.alt) return;
-
-    switch (input_evt.key) {
-        .Down => {
-            app.user_state.section = .untracked;
+////////////////////
+// Input Handlers //
+////////////////////
+fn arrow_up_handler(app: *App) !input.HandlerResult {
+    const repo_state = app.repo_state orelse return .{};
+    switch (app.user_state.section) {
+        .head => {
+            // Intentionally ignored, since there's nothing above here.
         },
-        else => {},
+        .untracked => {
+            if (!app.user_state.untracked_expanded or app.user_state.pos == 0) {
+                app.user_state.pos = 0;
+                app.user_state.section = .head;
+            } else {
+                app.user_state.pos -= 1;
+            }
+        },
+        .unstaged => {
+            if (!app.user_state.unstaged_expanded or app.user_state.pos == 0) {
+                if (app.user_state.untracked_expanded) {
+                    app.user_state.pos = repo_state.untracked.items.len;
+                } else {
+                    app.user_state.pos = 0;
+                }
+                app.user_state.section = .untracked;
+            } else {
+                app.user_state.pos -= 1;
+            }
+        },
+        .staged => {
+            if (!app.user_state.staged_expanded or app.user_state.pos == 0) {
+                if (app.user_state.unstaged_expanded) {
+                    app.user_state.pos = repo_state.unstaged.items.len;
+                } else {
+                    app.user_state.pos = 0;
+                }
+                app.user_state.section = .unstaged;
+            } else {
+                app.user_state.pos -= 1;
+            }
+        },
     }
+    return .{};
 }
 
-fn handle_untracked_input(app: *App, input_evt: input.Input) !void {
-    if (input_evt.modifiers.ctrl or input_evt.modifiers.alt) return;
-
-    const repo_state = &(app.repo_state orelse return);
-
-    switch (input_evt.key) {
-        .Down => {
-            const max_pos = if (app.user_state.untracked_expanded) repo_state.untracked.items.len else 0;
-            if (app.user_state.pos >= max_pos) {
+fn arrow_down_handler(app: *App) !input.HandlerResult {
+    const repo_state = app.repo_state orelse return .{};
+    switch (app.user_state.section) {
+        .head => {
+            app.user_state.pos = 0;
+            app.user_state.section = .untracked;
+        },
+        .untracked => {
+            if (!app.user_state.untracked_expanded or
+                app.user_state.pos == repo_state.untracked.items.len)
+            {
                 app.user_state.pos = 0;
                 app.user_state.section = .unstaged;
             } else {
                 app.user_state.pos += 1;
             }
         },
-        .Up => {
-            if (app.user_state.pos == 0) {
-                app.user_state.section = .head;
-            } else {
-                app.user_state.pos -= 1;
-            }
-        },
-        .Tab => {
-            app.user_state.untracked_expanded = !app.user_state.untracked_expanded;
-            if (!app.user_state.untracked_expanded) {
-                app.user_state.pos = 0;
-            }
-        },
-        .S => {
-            const items = repo_state.untracked;
-            if (app.user_state.pos == 0 and items.items.len > 0) {
-                // Stage all files in section
-                var paths = try app.allocator.alloc([]const u8, items.items.len);
-                for (0.., items.items) |i, item| {
-                    paths[i] = item.path;
-                }
-                try app.job_queue.put(.{ .stage = paths });
-            } else if (app.user_state.pos > 0) {
-                // Stage single file
-                const item = items.items[app.user_state.pos - 1];
-                var paths = try app.allocator.alloc([]const u8, 1);
-                paths[0] = item.path;
-                try app.job_queue.put(.{ .stage = paths });
-
-                // Adjust position if we staged the last item
-                if (app.user_state.pos == items.items.len) {
-                    app.user_state.pos -= 1;
-                }
-            }
-        },
-        else => {},
-    }
-}
-
-fn handle_unstaged_input(app: *App, input_evt: input.Input) !void {
-    if (input_evt.modifiers.ctrl or input_evt.modifiers.alt) return;
-
-    const repo_state = &(app.repo_state orelse return);
-
-    switch (input_evt.key) {
-        .Down => {
-            const max_pos = if (app.user_state.unstaged_expanded) repo_state.unstaged.items.len else 0;
-            if (app.user_state.pos >= max_pos) {
+        .unstaged => {
+            if (!app.user_state.unstaged_expanded or
+                app.user_state.pos == repo_state.unstaged.items.len)
+            {
                 app.user_state.pos = 0;
                 app.user_state.section = .staged;
             } else {
                 app.user_state.pos += 1;
             }
         },
-        .Up => {
-            if (app.user_state.pos > 0) {
-                app.user_state.pos -= 1;
+        .staged => {
+            if (!app.user_state.staged_expanded or
+                app.user_state.pos >= repo_state.staged.items.len)
+            {
+                // Intentionally ignored, since there's nothing past here.
             } else {
-                app.user_state.section = .untracked;
-                app.user_state.pos = if (app.user_state.untracked_expanded) repo_state.untracked.items.len else 0;
+                app.user_state.pos += 1;
             }
         },
-        .Tab => {
+    }
+    return .{};
+}
+
+fn commit_handler(app: *App) !input.HandlerResult {
+    try app.job_queue.put(.commit);
+    return .{ .resume_input = false };
+}
+
+fn stage_handler(app: *App) !input.HandlerResult {
+    if (app.user_state.section != .untracked and app.user_state.section != .unstaged) {
+        return .{};
+    }
+    const deltas = current_deltas(app) orelse return .{};
+    const paths = try current_pos_paths(app, deltas);
+    if (app.user_state.pos == deltas.items.len) {
+        app.user_state.pos -= 1;
+    }
+    try app.job_queue.put(.{ .stage = paths });
+    return .{};
+}
+
+fn toggle_expand_handler(app: *App) !input.HandlerResult {
+    switch (app.user_state.section) {
+        .untracked => {
+            app.user_state.untracked_expanded = !app.user_state.untracked_expanded;
+            if (!app.user_state.untracked_expanded) {
+                app.user_state.pos = 0;
+            }
+        },
+        .unstaged => {
             app.user_state.unstaged_expanded = !app.user_state.unstaged_expanded;
             if (!app.user_state.unstaged_expanded) {
                 app.user_state.pos = 0;
             }
         },
-        .S => {
-            const items = repo_state.unstaged;
-            if (app.user_state.pos == 0 and items.items.len > 0) {
-                // Stage all files in section
-                var paths = try app.allocator.alloc([]const u8, items.items.len);
-                for (0.., items.items) |i, item| {
-                    paths[i] = item.path;
-                }
-                try app.job_queue.put(.{ .stage = paths });
-            } else if (app.user_state.pos > 0) {
-                // Stage single file
-                const item = items.items[app.user_state.pos - 1];
-                var paths = try app.allocator.alloc([]const u8, 1);
-                paths[0] = item.path;
-                try app.job_queue.put(.{ .stage = paths });
-
-                // Adjust position if we staged the last item
-                if (app.user_state.pos == items.items.len) {
-                    app.user_state.pos -= 1;
-                }
-            }
-        },
-        else => {},
-    }
-}
-
-fn handle_staged_input(app: *App, input_evt: input.Input) !void {
-    if (input_evt.modifiers.ctrl or input_evt.modifiers.alt) return;
-
-    const repo_state = &(app.repo_state orelse return);
-
-    switch (input_evt.key) {
-        .Down => {
-            const max_pos = if (app.user_state.staged_expanded) repo_state.staged.items.len else 0;
-            if (app.user_state.pos < max_pos) {
-                app.user_state.pos += 1;
-            }
-        },
-        .Up => {
-            if (app.user_state.pos > 0) {
-                app.user_state.pos -= 1;
-            } else {
-                app.user_state.section = .unstaged;
-                app.user_state.pos = if (app.user_state.unstaged_expanded) repo_state.unstaged.items.len else 0;
-            }
-        },
-        .Tab => {
+        .staged => {
             app.user_state.staged_expanded = !app.user_state.staged_expanded;
             if (!app.user_state.staged_expanded) {
                 app.user_state.pos = 0;
             }
         },
-        .U => {
-            const items = repo_state.staged;
-            if (app.user_state.pos == 0 and items.items.len > 0) {
-                // Unstage all files
-                var paths = try app.allocator.alloc([]const u8, items.items.len);
-                for (0.., items.items) |i, item| {
-                    paths[i] = item.path;
-                }
-                try app.job_queue.put(.{ .unstage = paths });
-            } else if (app.user_state.pos > 0) {
-                // Unstage single file
-                const item = items.items[app.user_state.pos - 1];
-                var paths = try app.allocator.alloc([]const u8, 1);
-                paths[0] = item.path;
-                try app.job_queue.put(.{ .unstage = paths });
-
-                // Adjust position if we unstaged the last item
-                if (app.user_state.pos == items.items.len) {
-                    app.user_state.pos -= 1;
-                }
-            }
-        },
         else => {},
     }
+    return .{};
+}
+
+fn unstage_handler(app: *App) !input.HandlerResult {
+    if (app.user_state.section != .staged) {
+        return .{};
+    }
+    const deltas = current_deltas(app) orelse return .{};
+    const paths = try current_pos_paths(app, deltas);
+    if (app.user_state.pos == deltas.items.len) {
+        app.user_state.pos -= 1;
+    }
+    try app.job_queue.put(.{ .unstage = paths });
+    return .{};
+}
+
+/////////////
+// Helpers //
+/////////////
+fn current_deltas(app: *const App) ?*const std.ArrayList(ui.FileItem) {
+    const repo_state = app.repo_state orelse return null;
+    switch (app.user_state.section) {
+        .untracked => return &repo_state.untracked,
+        .unstaged => return &repo_state.unstaged,
+        .staged => return &repo_state.staged,
+        else => return null,
+    }
+}
+
+fn current_pos_paths(
+    app: *const App,
+    deltas: *const std.ArrayList(ui.FileItem),
+) ![]const []const u8 {
+    if (app.user_state.pos == 0) {
+        var paths = try app.allocator.alloc([]const u8, deltas.items.len);
+        for (0.., deltas.items) |i, delta| {
+            paths[i] = delta.path;
+        }
+        return paths;
+    }
+
+    const delta = deltas.items[app.user_state.pos - 1];
+    var paths = try app.allocator.alloc([]const u8, 1);
+    paths[0] = delta.path;
+    return paths;
 }

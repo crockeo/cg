@@ -1,5 +1,58 @@
 const std = @import("std");
 
+pub const HandlerResult = struct {
+    resume_input: bool = true,
+};
+
+pub fn InputMap(comptime T: type) type {
+    return struct {
+        const Self = @This();
+        const Handler = *const fn (T) error{OutOfMemory}!HandlerResult;
+
+        allocator: std.mem.Allocator,
+        assoc: std.AutoHashMap(Input, *Self),
+        handler: ?Handler,
+
+        pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!*Self {
+            const self = try allocator.create(Self);
+            errdefer allocator.destroy(self);
+
+            self.* = .{
+                .allocator = allocator,
+                .assoc = .init(allocator),
+                .handler = null,
+            };
+
+            return self;
+        }
+
+        pub fn deinit(self: *Self) void {
+            var children = self.assoc.valueIterator();
+            while (children.next()) |child| {
+                child.*.deinit();
+            }
+            self.assoc.deinit();
+            self.allocator.destroy(self);
+        }
+
+        pub fn add(self: *Self, input_sequence: []const Input, handler: Handler) error{OutOfMemory}!void {
+            var curr = self;
+            for (input_sequence) |input| {
+                curr = self.get(input) orelse blk: {
+                    const next = try Self.init(self.allocator);
+                    try self.assoc.put(input, next);
+                    break :blk next;
+                };
+            }
+            curr.handler = handler;
+        }
+
+        pub fn get(self: *Self, input: Input) ?*Self {
+            return self.assoc.get(input);
+        }
+    };
+}
+
 pub fn read(stdin: std.fs.File) !Input {
     var buf: [16]u8 = undefined;
     const len = try stdin.read(&buf);

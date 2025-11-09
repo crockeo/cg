@@ -50,6 +50,26 @@ Look sparse? I started creating after building out some of the basic features.
 
 Keeping notes on what I should do, in what order :)
 
+### Systems
+
+- [ ] **System to show potential inputs.**
+      Render a pane on the bottom of the screen
+      which shows the valid contextual inputs
+      based on the input sequences in the InputMap.
+      Also include a `?` command which shows
+      available top-level commands.
+
+- [ ] **System to pipe output from subprocesses.**
+      For example, when we run `git commit`
+      we want to stream the output of pre-commit hooks
+      to a buffer that's visible on the bottom of the screen.
+
+- [ ] **Scrolling output**
+      When there are many changed files, we need a system
+      to allow the output to be truncated and scrolled.
+      This also implies being aware of the total size of the screen,
+      and therefore responding to `SIGHUP`.
+
 ### Architecture
 
 - **Foreground**
