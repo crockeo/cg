@@ -85,3 +85,67 @@ pub fn BoundedQueue(comptime T: type) type {
         }
     };
 }
+
+pub fn LockstepQueue(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        allocator: std.mem.Allocator,
+        mut: std.Thread.Mutex,
+        read_available: std.Thread.Condition,
+        value: ?T,
+        write_available: std.Thread.Condition,
+
+        pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!*Self {
+            const self = try allocator.create(Self);
+            errdefer allocator.destroy(self);
+
+            self.* = .{
+                .allocator = allocator,
+                .mut = .{},
+                .read_available = .{},
+                .value = null,
+                .write_available = .{},
+            };
+
+            return self;
+        }
+
+        pub fn deinit(self: *Self) void {
+            if (self.value) |*value| {
+                // TODO: destroy it if it has a deinit method?
+                _ = value;
+            }
+            self.allocator.destroy(self);
+        }
+
+        pub fn put(self: *Self, value: T) error{OutOfMemory}!void {
+            self.mut.lock();
+            defer self.mut.unlock();
+            while (self.value != null) {
+                self.write_available.wait(&self.mut);
+            }
+            self.value = value;
+            self.read_available.signal();
+            while (self.value != null) {
+                self.write_available.wait(&self.mut);
+            }
+        }
+
+        pub fn get(self: *Self) T {
+            self.mut.lock();
+            defer self.mut.unlock();
+            while (self.value == null) {
+                self.read_available.wait(&self.mut);
+            }
+            return self.value.?;
+        }
+
+        pub fn next(self: *Self) void {
+            self.mut.lock();
+            defer self.mut.unlock();
+            self.value = null;
+            self.write_available.signal();
+        }
+    };
+}

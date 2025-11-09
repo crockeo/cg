@@ -13,25 +13,24 @@ const LoopEvent = union(enum) {
 };
 
 const Job = union(enum) {
-    stage: []const []const u8,
-    unstage: []const []const u8,
-    commit: void,
     push: struct {
         remote: []const u8,
         branch: []const u8,
     },
+    refresh: void,
+    stage: []const []const u8,
+    unstage: []const []const u8,
 };
 
 const App = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    event_queue: *queue.BoundedQueue(LoopEvent),
+    event_queue: *queue.LockstepQueue(LoopEvent),
     input_map: *input.InputMap(*Self),
     job_queue: *queue.Queue(Job),
     original_termios: std.posix.termios,
     paused: event.Event,
-    ready_for_input: event.Event,
     repo_state: ?ui.RepoState,
     user_state: ui.UserState,
 
@@ -39,7 +38,7 @@ const App = struct {
         const original_termios = try term.enter_raw_mode();
         errdefer term.restore(original_termios) catch {};
 
-        var event_queue = try queue.BoundedQueue(LoopEvent).init(allocator, 0);
+        var event_queue = try queue.LockstepQueue(LoopEvent).init(allocator);
         errdefer event_queue.deinit();
 
         var job_queue = try queue.Queue(Job).init(allocator);
@@ -54,7 +53,6 @@ const App = struct {
             .original_termios = original_termios,
             .paused = .{},
             .user_state = ui.UserState.init(allocator),
-            .ready_for_input = .{ .is_set = true },
             .repo_state = null,
         };
         return self;
@@ -77,7 +75,6 @@ const App = struct {
     fn input_thread_main(self: *Self) void {
         const stdin = std.fs.File.stdin();
         while (true) {
-            self.ready_for_input.consume();
             const input_evt = input.read(stdin) catch {
                 @panic("input_thread_main error while reading input.");
             };
@@ -113,6 +110,15 @@ const App = struct {
         while (true) {
             const job = self.job_queue.get();
             switch (job) {
+                .push => |push_info| {
+                    git.push(self.allocator, push_info.remote, push_info.branch) catch {
+                        @panic("job_thread_main failed to push");
+                    };
+                },
+                .refresh => {
+                    // Intentionally omitted.
+                    // Only useful to perform the refresh below.
+                },
                 .stage => |paths| {
                     git.stage(self.allocator, paths) catch {
                         @panic("job_thread_main failed to stage files");
@@ -124,21 +130,6 @@ const App = struct {
                         @panic("job_thread_main failed to unstage files");
                     };
                     self.allocator.free(paths);
-                },
-                .commit => {
-                    term.restore(self.original_termios) catch {};
-                    defer _ = term.enter_raw_mode() catch {};
-
-                    git.commit(self.allocator) catch {
-                        @panic("job_thread_main failed to commit");
-                    };
-                    self.ready_for_input.set(true);
-                    self.paused.set(false);
-                },
-                .push => |push_info| {
-                    git.push(self.allocator, push_info.remote, push_info.branch) catch {
-                        @panic("job_thread_main failed to push");
-                    };
                 },
             }
 
@@ -214,6 +205,7 @@ pub fn main() !void {
         }
 
         const evt = app.event_queue.get();
+        defer app.event_queue.next();
         switch (evt) {
             .input => |input_evt| {
                 if (input_evt.eql(.{ .key = .Escape }) or
@@ -224,13 +216,11 @@ pub fn main() !void {
                         break;
                     }
                     curr_input_map = app.input_map;
-                    app.ready_for_input.set(true);
                     continue;
                 }
 
                 const next_input_map = curr_input_map.get(input_evt) orelse {
                     curr_input_map = app.input_map;
-                    app.ready_for_input.set(true);
                     continue;
                 };
 
@@ -238,9 +228,6 @@ pub fn main() !void {
                 if (next_input_map.handler) |handler| {
                     const result = try handler(app);
                     resume_input = result.resume_input;
-                }
-                if (resume_input) {
-                    app.ready_for_input.set(true);
                 }
             },
             .repo_state => |new_repo_state| {
@@ -340,8 +327,16 @@ fn arrow_down_handler(app: *App) !input.HandlerResult {
 }
 
 fn commit_handler(app: *App) !input.HandlerResult {
-    try app.job_queue.put(.commit);
-    return .{ .resume_input = false };
+    // TODO: error handling from event handlers
+
+    // Unlike the other handlers, we do commit synchronously,
+    // since we have to give control over to the user's editor.
+    term.restore(app.original_termios) catch {};
+    defer _ = term.enter_raw_mode() catch {};
+
+    git.commit(app.allocator) catch {};
+    app.job_queue.put(.refresh) catch {};
+    return .{};
 }
 
 fn stage_handler(app: *App) !input.HandlerResult {
