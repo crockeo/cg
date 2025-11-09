@@ -44,5 +44,8 @@ pub fn restore(original_termios: std.posix.termios) !void {
     stdout.writeAll("\x1b[?25h") catch {};
     stdout.writeAll("\x1b[?1049l") catch {};
 
+    // Ensure escape sequences are processed before changing terminal mode
+    stdout.sync() catch {};
+
     try std.posix.tcsetattr(stdin.handle, .FLUSH, original_termios);
 }

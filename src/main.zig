@@ -30,6 +30,7 @@ const App = struct {
     job_queue: *queue.Queue(Job),
     original_termios: std.posix.termios,
     paused: event.Event,
+    ready_for_input: event.Event,
 
     pub fn init(allocator: std.mem.Allocator) !*Self {
         const original_termios = try term.enter_raw_mode();
@@ -48,6 +49,7 @@ const App = struct {
             .job_queue = job_queue,
             .original_termios = original_termios,
             .paused = .{},
+            .ready_for_input = .{ .is_set = true },
         };
         return self;
     }
@@ -56,6 +58,7 @@ const App = struct {
         term.restore(self.original_termios) catch {};
         self.job_queue.deinit();
         self.event_queue.deinit();
+        self.allocator.destroy(self);
     }
 
     /// `input_thread_main` runs in the background fetching input from the user,
@@ -63,13 +66,16 @@ const App = struct {
     fn input_thread_main(self: *Self) void {
         const stdin = std.fs.File.stdin();
         while (true) {
+            // Wait for main thread to signal it's ready for input
+            self.ready_for_input.wait(true);
+            self.ready_for_input.set(false);
+
             const input_evt = input.read(stdin) catch {
                 @panic("input_thread_main error while reading input.");
             };
             self.event_queue.put(.{ .input = input_evt }) catch {
                 @panic("input_thread_main OOM");
             };
-            self.paused.wait(false);
         }
     }
 
@@ -77,17 +83,17 @@ const App = struct {
     /// updating the current state of the Git repo,
     /// in cases where the user makes no inputs.
     fn refresh_thread_main(self: *Self) void {
-        while (true) {
-            self.paused.wait(false);
-            const git_status = git.status(self.allocator) catch {
-                @panic("refresh_thread_main failed to get new status");
-            };
-            errdefer git_status.deinit();
-            self.event_queue.put(.{ .git_status = git_status }) catch {
-                @panic("refresh_thread_main OOM");
-            };
-            std.Thread.sleep(std.time.ns_per_s * 5);
-        }
+        // while (true) {
+        self.paused.wait(false);
+        const git_status = git.status(self.allocator) catch {
+            @panic("refresh_thread_main failed to get new status");
+        };
+        errdefer git_status.deinit();
+        self.event_queue.put(.{ .git_status = git_status }) catch {
+            @panic("refresh_thread_main OOM");
+        };
+        std.Thread.sleep(std.time.ns_per_s * 5);
+        // }
     }
 
     /// `job_thread_main` accepts jobs from the main thread
@@ -111,12 +117,10 @@ const App = struct {
                     self.allocator.free(paths);
                 },
                 .commit => {
-                    term.restore(self.original_termios) catch {
-                        @panic("job_thread_main failed to restore terminal mode");
-                    };
                     git.commit(self.allocator) catch {
                         @panic("job_thread_main failed to commit");
                     };
+
                     _ = term.enter_raw_mode() catch {
                         @panic("job_thread_main failed to re-enter raw mode after commit");
                     };
@@ -182,10 +186,13 @@ pub fn main() !void {
     }
 
     const stdout = std.fs.File.stdout();
-    var paused = false;
-
     while (true) {
         app.paused.wait(false);
+        app.ready_for_input.set(true);
+
+        if (curr_repo_state) |*repo_state| {
+            try ui.paint(allocator, &user_state, repo_state, stdout);
+        }
 
         const evt = app.event_queue.get();
         switch (evt) {
@@ -197,30 +204,24 @@ pub fn main() !void {
                     break;
                 }
 
-                if (curr_repo_state) |*repo_state| {
-                    if (input_evt.eql(.{ .key = .C }) and repo_state.staged.items.len > 0) {
-                        try app.job_queue.put(.commit);
-                        paused = true;
-                        app.paused.set(true);
-                    }
+                const repo_state = &(curr_repo_state orelse {
+                    // No repo state yet, signal ready for next input
+                    app.ready_for_input.set(true);
+                    continue;
+                });
 
-                    if (input_evt.eql(.{ .key = .P })) {
-                        try app.job_queue.put(.{ .push = .{ .remote = "origin", .branch = "main" } });
+                if (input_evt.eql(.{ .key = .C }) and repo_state.staged.items.len > 0) {
+                    try app.job_queue.put(.commit);
+                    app.paused.set(true);
+                } else if (input_evt.eql(.{ .key = .P })) {
+                    try app.job_queue.put(.{ .push = .{ .remote = "origin", .branch = "main" } });
+                } else {
+                    switch (user_state.section) {
+                        .head => try handle_head_input(allocator, &user_state, repo_state, input_evt, app.job_queue),
+                        .untracked => try handle_untracked_input(allocator, &user_state, repo_state, input_evt, app.job_queue),
+                        .unstaged => try handle_unstaged_input(allocator, &user_state, repo_state, input_evt, app.job_queue),
+                        .staged => try handle_staged_input(allocator, &user_state, repo_state, input_evt, app.job_queue),
                     }
-                    // Section-specific input handling
-                    else {
-                        switch (user_state.section) {
-                            .head => try handle_head_input(allocator, &user_state, repo_state, input_evt, app.job_queue),
-                            .untracked => try handle_untracked_input(allocator, &user_state, repo_state, input_evt, app.job_queue),
-                            .unstaged => try handle_unstaged_input(allocator, &user_state, repo_state, input_evt, app.job_queue),
-                            .staged => try handle_staged_input(allocator, &user_state, repo_state, input_evt, app.job_queue),
-                        }
-                    }
-
-                    if (paused) {
-                        continue;
-                    }
-                    try ui.paint(allocator, &user_state, repo_state, stdout);
                 }
             },
             .git_status => |git_status| {
@@ -229,19 +230,12 @@ pub fn main() !void {
                 }
                 curr_git_status = git_status;
 
-                // Update RepoState
                 if (curr_repo_state) |*repo_state| {
                     repo_state.deinit(allocator);
                 }
                 curr_repo_state = try ui.RepoState.init(allocator, git_status);
 
-                // Resume UI and repaint with new repo state
-                paused = false;
-                if (curr_repo_state) |*repo_state| {
-                    try ui.paint(allocator, &user_state, repo_state, stdout);
-                    // Signal input thread to resume reading
-                    app.paused.set(false);
-                }
+                app.paused.set(false);
             },
         }
     }

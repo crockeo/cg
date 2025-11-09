@@ -7,6 +7,9 @@ pub fn commit(allocator: std.mem.Allocator) !void {
         &[_][]const u8{ "git", "commit" },
         allocator,
     );
+    child.stdin_behavior = .Inherit;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
     try child.spawn();
     _ = try child.wait();
 }
