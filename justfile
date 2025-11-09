@@ -6,4 +6,4 @@ install:
 	cp zig-out/bin/cg ~/bin
 
 watch +args:
-	watchexec -w . -e zig -- @just {{args}}
+	watchexec -w . -e zig -- just {{args}}

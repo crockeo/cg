@@ -1,25 +1,10 @@
 const std = @import("std");
 
+const git = @import("git.zig");
 const input = @import("input.zig");
 const queue = @import("queue.zig");
 const term = @import("term.zig");
 const ui = @import("ui.zig");
-
-const RepoState = struct {
-    const Self = @This();
-
-    allocator: std.mem.Allocator,
-
-    pub fn init(allocator: std.mem.Allocator) Self {
-        return .{
-            .allocator = allocator,
-        };
-    }
-
-    pub fn deinit(self: *Self) void {
-        _ = self;
-    }
-};
 
 const UserState = struct {
     const Self = @This();
@@ -38,8 +23,8 @@ const UserState = struct {
 };
 
 const Event = union(enum) {
+    git_status: *git.Status,
     input: input.Input,
-    repo_state: RepoState,
 };
 
 const Job = union(enum) {};
@@ -66,7 +51,7 @@ pub fn main() !void {
     _ = try std.Thread.spawn(
         .{ .allocator = allocator },
         refresh_thread_main,
-        .{event_queue},
+        .{ allocator, event_queue },
     );
     _ = try std.Thread.spawn(
         .{ .allocator = allocator },
@@ -74,17 +59,27 @@ pub fn main() !void {
         .{ event_queue, job_queue },
     );
 
+    var curr_git_status: ?*git.Status = null;
+    defer {
+        if (curr_git_status) |git_status| {
+            git_status.deinit();
+        }
+    }
+
     while (true) {
         const event = event_queue.get();
         switch (event) {
             .input => |input_evt| {
-                if (input_evt.key == .Escape or input_evt.key == .Q) {
+                if (input_evt.key == .Escape or input_evt.key == .Q or (input_evt.key == .C and input_evt.modifiers.ctrl)) {
                     break;
                 }
                 std.debug.print("{any}\n", .{input_evt});
             },
-            .repo_state => |repo_state_evt| {
-                _ = repo_state_evt;
+            .git_status => |git_status| {
+                if (curr_git_status) |last_git_status| {
+                    last_git_status.deinit();
+                }
+                curr_git_status = git_status;
             },
         }
     }
@@ -102,10 +97,26 @@ fn input_thread_main(event_queue: *queue.Queue(Event)) void {
     }
 }
 
-fn refresh_thread_main(event_queue: *queue.Queue(Event)) void {
-    _ = event_queue;
+/// `refresh_thread_main` runs in the background
+/// updating the current state of the Git repo,
+/// in cases where the user makes no inputs.
+fn refresh_thread_main(allocator: std.mem.Allocator, event_queue: *queue.Queue(Event)) void {
+    while (true) {
+        const git_status = git.status(allocator) catch {
+            @panic("refresh_thread_main failed to get new status");
+        };
+        errdefer git_status.deinit();
+        event_queue.put(.{ .git_status = git_status }) catch {
+            @panic("refresh_thread_main OOM");
+        };
+        std.Thread.sleep(std.time.ns_per_s * 5);
+    }
 }
 
+/// `job_thread_main` accepts jobs from the main thread
+/// to perform them without blocking repainting.
+/// When a job is finished, this thread will construct a new git status
+/// and provide it to the main thread through an event.
 fn job_thread_main(event_queue: *queue.Queue(Event), job_queue: *queue.Queue(Job)) void {
     _ = event_queue;
     _ = job_queue;
