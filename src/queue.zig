@@ -32,6 +32,7 @@ pub fn Queue(comptime T: type) type {
             self.mut.lock();
             defer self.mut.unlock();
             try self.queue.append(self.allocator, value);
+            self.cond.signal();
         }
 
         pub fn get(self: *Self) T {

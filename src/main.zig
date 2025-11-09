@@ -2,6 +2,7 @@ const std = @import("std");
 
 const input = @import("input.zig");
 const queue = @import("queue.zig");
+const term = @import("term.zig");
 const ui = @import("ui.zig");
 
 const RepoState = struct {
@@ -48,6 +49,9 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    const original_termios = try term.enter_raw_mode();
+    defer term.restore(original_termios) catch {};
+
     var event_queue = try queue.Queue(Event).init(allocator);
     defer event_queue.deinit();
 
@@ -74,7 +78,10 @@ pub fn main() !void {
         const event = event_queue.get();
         switch (event) {
             .input => |input_evt| {
-                _ = input_evt;
+                if (input_evt.key == .Escape or input_evt.key == .Q) {
+                    break;
+                }
+                std.debug.print("{any}\n", .{input_evt});
             },
             .repo_state => |repo_state_evt| {
                 _ = repo_state_evt;
