@@ -8,7 +8,7 @@ const term = @import("term.zig");
 const ui = @import("ui.zig");
 
 const LoopEvent = union(enum) {
-    git_status: *git.Status,
+    repo_state: ui.RepoState,
     input: input.Input,
 };
 
@@ -27,7 +27,6 @@ const App = struct {
 
     allocator: std.mem.Allocator,
     event_queue: *queue.BoundedQueue(LoopEvent),
-    git_status: ?*git.Status,
     input_map: *input.InputMap(*Self),
     job_queue: *queue.Queue(Job),
     original_termios: std.posix.termios,
@@ -55,7 +54,6 @@ const App = struct {
             .original_termios = original_termios,
             .paused = .{},
             .user_state = ui.UserState.init(allocator),
-            .git_status = null,
             .ready_for_input = .{ .is_set = true },
             .repo_state = null,
         };
@@ -64,9 +62,6 @@ const App = struct {
 
     pub fn deinit(self: *App) void {
         term.restore(self.original_termios) catch {};
-        if (self.git_status) |git_status| {
-            git_status.deinit();
-        }
         self.input_map.deinit();
         if (self.repo_state) |*repo_state| {
             repo_state.deinit(self.allocator);
@@ -98,11 +93,12 @@ const App = struct {
     fn refresh_thread_main(self: *Self) void {
         while (true) {
             self.paused.wait(false);
-            const git_status = git.status(self.allocator) catch {
+            const repo_state = ui.RepoState.init(self.allocator) catch {
                 @panic("refresh_thread_main failed to get new status");
             };
-            errdefer git_status.deinit();
-            self.event_queue.put(.{ .git_status = git_status }) catch {
+            errdefer repo_state.deinit();
+
+            self.event_queue.put(.{ .repo_state = repo_state }) catch {
                 @panic("refresh_thread_main OOM");
             };
             std.Thread.sleep(std.time.ns_per_s * 5);
@@ -147,10 +143,12 @@ const App = struct {
             }
 
             // Trigger a git status refresh after completing the job
-            const git_status = git.status(self.allocator) catch {
-                @panic("job_thread_main failed to get new status after job");
+            const repo_state = ui.RepoState.init(self.allocator) catch {
+                @panic("job_thread_main failed to get new status");
             };
-            self.event_queue.put(.{ .git_status = git_status }) catch {
+            errdefer repo_state.deinit();
+
+            self.event_queue.put(.{ .repo_state = repo_state }) catch {
                 @panic("job_thread_main OOM");
             };
         }
@@ -245,17 +243,11 @@ pub fn main() !void {
                     app.ready_for_input.set(true);
                 }
             },
-            .git_status => |git_status| {
-                if (app.git_status) |last_git_status| {
-                    last_git_status.deinit();
-                }
-                app.git_status = git_status;
-
+            .repo_state => |new_repo_state| {
                 if (app.repo_state) |*repo_state| {
                     repo_state.deinit(allocator);
                 }
-                app.repo_state = try ui.RepoState.init(allocator, git_status);
-
+                app.repo_state = new_repo_state;
                 app.paused.set(false);
             },
         }

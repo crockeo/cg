@@ -42,7 +42,10 @@ pub const RepoState = struct {
     unstaged: std.ArrayList(FileItem),
     untracked: std.ArrayList(FileItem),
 
-    pub fn init(allocator: std.mem.Allocator, git_status: *git.Status) !Self {
+    pub fn init(allocator: std.mem.Allocator) !Self {
+        const git_status = try git.status(allocator);
+        errdefer git_status.deinit();
+
         var staged = std.ArrayList(FileItem).empty;
         errdefer staged.deinit(allocator);
 
@@ -113,6 +116,7 @@ pub const RepoState = struct {
     }
 
     pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+        self.git_status.deinit();
         self.staged.deinit(allocator);
         self.unstaged.deinit(allocator);
         self.untracked.deinit(allocator);
