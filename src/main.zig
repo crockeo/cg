@@ -30,7 +30,6 @@ const App = struct {
     input_map: *input.InputMap(*Self),
     job_queue: *queue.Queue(Job),
     original_termios: std.posix.termios,
-    paused: event.Event,
     repo_state: ?ui.RepoState,
     user_state: ui.UserState,
 
@@ -51,7 +50,6 @@ const App = struct {
             .input_map = try .init(allocator),
             .job_queue = job_queue,
             .original_termios = original_termios,
-            .paused = .{},
             .user_state = ui.UserState.init(allocator),
             .repo_state = null,
         };
@@ -89,7 +87,6 @@ const App = struct {
     /// in cases where the user makes no inputs.
     fn refresh_thread_main(self: *Self) void {
         while (true) {
-            self.paused.wait(false);
             const repo_state = ui.RepoState.init(self.allocator) catch {
                 @panic("refresh_thread_main failed to get new status");
             };
@@ -198,8 +195,6 @@ pub fn main() !void {
     var curr_input_map: *input.InputMap(*App) = app.input_map;
     const stdout = std.fs.File.stdout();
     while (true) {
-        app.paused.wait(false);
-
         if (app.repo_state) |*repo_state| {
             try ui.paint(allocator, &app.user_state, repo_state, stdout);
         }
@@ -235,7 +230,6 @@ pub fn main() !void {
                     repo_state.deinit(allocator);
                 }
                 app.repo_state = new_repo_state;
-                app.paused.set(false);
             },
         }
     }
