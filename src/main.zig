@@ -9,6 +9,7 @@ const ui = @import("ui.zig");
 const Event = union(enum) {
     git_status: *git.Status,
     input: input.Input,
+    pause_ui: void,
 };
 
 const Job = union(enum) {
@@ -35,10 +36,13 @@ pub fn main() !void {
     var job_queue = try queue.Queue(Job).init(allocator);
     defer job_queue.deinit();
 
+    // Shared atomic flag to pause input thread during commit
+    var input_paused = std.atomic.Value(bool).init(false);
+
     _ = try std.Thread.spawn(
         .{ .allocator = allocator },
         input_thread_main,
-        .{event_queue},
+        .{ event_queue, &input_paused },
     );
     _ = try std.Thread.spawn(
         .{ .allocator = allocator },
@@ -48,7 +52,7 @@ pub fn main() !void {
     _ = try std.Thread.spawn(
         .{ .allocator = allocator },
         job_thread_main,
-        .{ allocator, event_queue, job_queue },
+        .{ allocator, original_termios, &input_paused, event_queue, job_queue },
     );
 
     var user_state = ui.UserState.init(allocator);
@@ -69,6 +73,7 @@ pub fn main() !void {
     }
 
     const stdout = std.fs.File.stdout();
+    var paused = false;
 
     while (true) {
         const event = event_queue.get();
@@ -101,8 +106,10 @@ pub fn main() !void {
                         try job_queue.put(.{ .push = .{ .remote = "origin", .branch = "main" } });
                     }
 
-                    // Repaint after input
-                    try ui.paint(allocator, &user_state, repo_state, stdout);
+                    // Repaint after input (unless paused)
+                    if (!paused) {
+                        try ui.paint(allocator, &user_state, repo_state, stdout);
+                    }
                 }
             },
             .git_status => |git_status| {
@@ -117,10 +124,14 @@ pub fn main() !void {
                 }
                 curr_repo_state = try ui.RepoState.init(allocator, git_status);
 
-                // Repaint with new repo state
+                // Resume UI and repaint with new repo state
+                paused = false;
                 if (curr_repo_state) |*repo_state| {
                     try ui.paint(allocator, &user_state, repo_state, stdout);
                 }
+            },
+            .pause_ui => {
+                paused = true;
             },
         }
     }
@@ -277,9 +288,15 @@ fn handle_unstage(
     }
 }
 
-fn input_thread_main(event_queue: *queue.Queue(Event)) void {
+fn input_thread_main(event_queue: *queue.Queue(Event), input_paused: *std.atomic.Value(bool)) void {
     const stdin = std.fs.File.stdin();
     while (true) {
+        // Check if input reading is paused (e.g., during commit with editor open)
+        if (input_paused.load(.acquire)) {
+            std.Thread.sleep(std.time.ns_per_ms * 50);
+            continue;
+        }
+
         const input_evt = input.read(stdin) catch {
             @panic("input_thread_main error while reading input.");
         };
@@ -309,7 +326,13 @@ fn refresh_thread_main(allocator: std.mem.Allocator, event_queue: *queue.Queue(E
 /// to perform them without blocking repainting.
 /// When a job is finished, this thread will construct a new git status
 /// and provide it to the main thread through an event.
-fn job_thread_main(allocator: std.mem.Allocator, event_queue: *queue.Queue(Event), job_queue: *queue.Queue(Job)) void {
+fn job_thread_main(
+    allocator: std.mem.Allocator,
+    original_termios: std.posix.termios,
+    input_paused: *std.atomic.Value(bool),
+    event_queue: *queue.Queue(Event),
+    job_queue: *queue.Queue(Job),
+) void {
     while (true) {
         const job = job_queue.get();
         switch (job) {
@@ -326,13 +349,31 @@ fn job_thread_main(allocator: std.mem.Allocator, event_queue: *queue.Queue(Event
                 allocator.free(paths);
             },
             .commit => {
+                // Pause UI to prevent painting interference
+                event_queue.put(.pause_ui) catch {
+                    @panic("job_thread_main failed to send pause_ui event");
+                };
+
+                // Pause input thread so editor can receive keystrokes
+                input_paused.store(true, .release);
+
+                // Exit raw mode so editor works properly
+                term.restore(original_termios) catch {
+                    @panic("job_thread_main failed to restore terminal mode");
+                };
+
+                // Run commit (opens editor, runs pre-commit hooks)
                 git.commit(allocator) catch {
                     @panic("job_thread_main failed to commit");
                 };
-                // Re-enter raw mode after commit (which opens an editor)
+
+                // Re-enter raw mode after commit completes
                 _ = term.enter_raw_mode() catch {
                     @panic("job_thread_main failed to re-enter raw mode after commit");
                 };
+
+                // Resume input thread
+                input_paused.store(false, .release);
             },
             .push => |push_info| {
                 git.push(allocator, push_info.remote, push_info.branch) catch {
