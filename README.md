@@ -52,6 +52,12 @@ Keeping notes on what I should do, in what order :)
 
 ### Systems
 
+- [ ] **System to perform predictive updates.**
+      When a user takes an action, in many cases the result is already known.
+      E.g. staging will cause the hovered item to appear in the staged area.
+      We should make it easy to update the repo state such that an action appears to occur immediately,
+      and then update it with the real state when the background job is finished.
+
 - [ ] **System to show potential inputs.**
       Render a pane on the bottom of the screen
       which shows the valid contextual inputs
