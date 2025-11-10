@@ -239,7 +239,7 @@ pub fn main() !void {
 // Input Handlers //
 ////////////////////
 fn arrow_up_handler(app: *App) !input.HandlerResult {
-    const repo_state = app.repo_state orelse return .{};
+    const repo_state = &(app.repo_state orelse return .{});
     switch (app.user_state.section) {
         .head => {
             // Intentionally ignored, since there's nothing above here.
@@ -337,12 +337,18 @@ fn stage_handler(app: *App) !input.HandlerResult {
     if (app.user_state.section != .untracked and app.user_state.section != .unstaged) {
         return .{};
     }
+
     const deltas = current_deltas(app) orelse return .{};
+    if (deltas.items.len == 0) {
+        return .{};
+    }
+
     const paths = try current_pos_paths(app, deltas);
     if (app.user_state.pos == deltas.items.len) {
         app.user_state.pos -= 1;
     }
     try app.job_queue.put(.{ .stage = paths });
+
     return .{};
 }
 
@@ -375,12 +381,18 @@ fn unstage_handler(app: *App) !input.HandlerResult {
     if (app.user_state.section != .staged) {
         return .{};
     }
+
     const deltas = current_deltas(app) orelse return .{};
+    if (deltas.items.len == 0) {
+        return .{};
+    }
+
     const paths = try current_pos_paths(app, deltas);
     if (app.user_state.pos == deltas.items.len) {
         app.user_state.pos -= 1;
     }
     try app.job_queue.put(.{ .unstage = paths });
+
     return .{};
 }
 
@@ -388,7 +400,7 @@ fn unstage_handler(app: *App) !input.HandlerResult {
 // Helpers //
 /////////////
 fn current_deltas(app: *const App) ?*const std.ArrayList(ui.FileItem) {
-    const repo_state = app.repo_state orelse return null;
+    const repo_state = &(app.repo_state orelse return null);
     switch (app.user_state.section) {
         .untracked => return &repo_state.untracked,
         .unstaged => return &repo_state.unstaged,
