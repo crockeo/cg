@@ -1,13 +1,16 @@
 const std = @import("std");
 
-const event = @import("event.zig");
 const git = @import("git.zig");
 const input = @import("input.zig");
 const queue = @import("queue.zig");
 const term = @import("term.zig");
 const ui = @import("ui.zig");
 
-const LoopEvent = union(enum) {
+const CGError = error{
+    OutOfMemory,
+};
+
+const Event = union(enum) {
     repo_state: ui.RepoState,
     input: input.Input,
 };
@@ -25,12 +28,18 @@ const Job = union(enum) {
 pub const State = struct {
     const Self = @This();
 
+    const HandleContext = struct {
+        job_queue: *queue.Queue(Job),
+        original_termios: std.posix.termios,
+    };
+
     const PaintContext = struct {
         term_height: usize,
         term_width: usize,
     };
 
     const Result = union(enum) {
+        exit: void,
         pass: void,
         pop: void,
         push: State,
@@ -39,8 +48,8 @@ pub const State = struct {
 
     const VTable = struct {
         deinit: ?*const fn (self: *Self) void,
-        paint: *const fn (self: *const Self, PaintContext) void,
-        handle: *const fn (self: *Self, LoopEvent) Result,
+        paint: *const fn (self: *const Self, PaintContext) CGError!void,
+        handle: *const fn (self: *Self, HandleContext, Event) CGError!Result,
     };
 
     context: *anyopaque,
@@ -52,12 +61,12 @@ pub const State = struct {
         }
     }
 
-    pub fn paint(self: *const Self, ctx: PaintContext) void {
-        self.vtable.paint(self, ctx);
+    pub fn handle(self: *Self, ctx: HandleContext, event: Event) CGError!Result {
+        return try self.vtable.handle(self, ctx, event);
     }
 
-    pub fn handle(self: *Self, loop_event: LoopEvent) Result {
-        return self.vtable.handle(self, loop_event);
+    pub fn paint(self: *const Self, ctx: PaintContext) CGError!void {
+        try self.vtable.paint(self, ctx);
     }
 };
 
@@ -74,29 +83,302 @@ pub const BaseState = struct {
     };
 
     allocator: std.mem.Allocator,
+    curr_input_map: *input.InputMap(*Self),
+    input_map: *input.InputMap(*Self),
+    job_queue: *queue.Queue(Job),
+    original_termios: std.posix.termios,
+    repo_state: ?ui.RepoState,
+    user_state: ui.UserState,
 
-    pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!*Self {
+    pub fn init(allocator: std.mem.Allocator, job_queue: *queue.Queue(Job), original_termios: std.posix.termios) error{OutOfMemory}!*Self {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
+
+        const input_map = try input.InputMap(*Self).init(allocator);
+        errdefer input_map.deinit();
+
         self.* = .{
             .allocator = allocator,
+            .input_map = input_map,
+            .curr_input_map = input_map,
+            .job_queue = job_queue,
+            .original_termios = original_termios,
+            .repo_state = null,
+            .user_state = ui.UserState.init(allocator),
         };
+
+        try self.input_map.add(&[_]input.Input{.{ .key = .Up }}, Self.arrow_up_handler);
+        try self.input_map.add(&[_]input.Input{.{ .key = .Down }}, Self.arrow_down_handler);
+        try self.input_map.add(&[_]input.Input{.{ .key = .B }}, Self.branch_handler);
+        try self.input_map.add(&[_]input.Input{ .{ .key = .C }, .{ .key = .C } }, Self.commit_handler);
+        try self.input_map.add(&[_]input.Input{.{ .key = .S }}, Self.stage_handler);
+        try self.input_map.add(&[_]input.Input{.{ .key = .Tab }}, Self.toggle_expand_handler);
+        try self.input_map.add(&[_]input.Input{.{ .key = .U }}, Self.unstage_handler);
+
         return self;
     }
 
-    pub fn deinit(state: State) void {
+    pub fn as_state(self: *Self) State {
+        return .{
+            .context = @ptrCast(self),
+            .vtable = &Self.vtable,
+        };
+    }
+
+    pub fn deinit(state: *State) void {
         const self: *Self = @ptrCast(@alignCast(state.context));
+        self.input_map.deinit();
+        if (self.repo_state) |*repo_state| {
+            repo_state.deinit(self.allocator);
+        }
+        self.user_state.deinit();
         self.allocator.destroy(self);
     }
 
-    pub fn paint(state: State, ctx: State.PaintContext) void {
-        _ = state;
+    pub fn paint(state: *const State, ctx: State.PaintContext) CGError!void {
         _ = ctx;
+        const self: *const Self = @ptrCast(@alignCast(state.context));
+        const stdout = std.fs.File.stdout();
+        if (self.repo_state) |*repo_state| {
+            ui.paint(self.allocator, &self.user_state, repo_state, stdout) catch {};
+        }
     }
 
-    pub fn handle(state: State, loop_event: LoopEvent) State.Result {
-        _ = state;
-        _ = loop_event;
+    pub fn handle(state: *State, _: State.HandleContext, event: Event) CGError!State.Result {
+        const self: *Self = @ptrCast(@alignCast(state.context));
+
+        switch (event) {
+            .repo_state => |new_repo_state| {
+                if (self.repo_state) |*repo_state| {
+                    repo_state.deinit(self.allocator);
+                }
+                self.repo_state = new_repo_state;
+                return .pass;
+            },
+            .input => |input_evt| {
+                if (input_evt.eql(.{ .key = .Escape }) or
+                    input_evt.eql(.{ .key = .Q }) or
+                    input_evt.eql(.{ .key = .C, .modifiers = .{ .ctrl = true } }))
+                {
+                    if (self.curr_input_map == self.input_map) {
+                        return .exit;
+                    }
+                    self.curr_input_map = self.input_map;
+                    return .stop;
+                }
+
+                const next_input_map = self.curr_input_map.get(input_evt) orelse {
+                    self.curr_input_map = self.input_map;
+                    return .stop;
+                };
+
+                if (next_input_map.handler) |handler| {
+                    _ = try handler(self);
+                    return .stop;
+                }
+
+                return .stop;
+            },
+        }
+    }
+
+    ////////////////////
+    // Input Handlers //
+    ////////////////////
+    fn arrow_up_handler(self: *Self) !input.HandlerResult {
+        const repo_state = &(self.repo_state orelse return .{});
+        switch (self.user_state.section) {
+            .head => {
+                // Intentionally ignored, since there's nothing above here.
+            },
+            .untracked => {
+                if (!self.user_state.untracked_expanded or self.user_state.pos == 0) {
+                    self.user_state.pos = 0;
+                    self.user_state.section = .head;
+                } else {
+                    self.user_state.pos -= 1;
+                }
+            },
+            .unstaged => {
+                if (!self.user_state.unstaged_expanded or self.user_state.pos == 0) {
+                    if (self.user_state.untracked_expanded) {
+                        self.user_state.pos = repo_state.untracked.items.len;
+                    } else {
+                        self.user_state.pos = 0;
+                    }
+                    self.user_state.section = .untracked;
+                } else {
+                    self.user_state.pos -= 1;
+                }
+            },
+            .staged => {
+                if (!self.user_state.staged_expanded or self.user_state.pos == 0) {
+                    if (self.user_state.unstaged_expanded) {
+                        self.user_state.pos = repo_state.unstaged.items.len;
+                    } else {
+                        self.user_state.pos = 0;
+                    }
+                    self.user_state.section = .unstaged;
+                } else {
+                    self.user_state.pos -= 1;
+                }
+            },
+        }
+        return .{};
+    }
+
+    fn arrow_down_handler(self: *Self) !input.HandlerResult {
+        const repo_state = self.repo_state orelse return .{};
+        switch (self.user_state.section) {
+            .head => {
+                self.user_state.pos = 0;
+                self.user_state.section = .untracked;
+            },
+            .untracked => {
+                if (!self.user_state.untracked_expanded or
+                    self.user_state.pos == repo_state.untracked.items.len)
+                {
+                    self.user_state.pos = 0;
+                    self.user_state.section = .unstaged;
+                } else {
+                    self.user_state.pos += 1;
+                }
+            },
+            .unstaged => {
+                if (!self.user_state.unstaged_expanded or
+                    self.user_state.pos == repo_state.unstaged.items.len)
+                {
+                    self.user_state.pos = 0;
+                    self.user_state.section = .staged;
+                } else {
+                    self.user_state.pos += 1;
+                }
+            },
+            .staged => {
+                if (!self.user_state.staged_expanded or
+                    self.user_state.pos >= repo_state.staged.items.len)
+                {
+                    // Intentionally ignored, since there's nothing past here.
+                } else {
+                    self.user_state.pos += 1;
+                }
+            },
+        }
+        return .{};
+    }
+
+    fn branch_handler(self: *Self) !input.HandlerResult {
+        _ = self;
+        // TODO: push InputState to state stack
+        // For now just returning, will implement after refactoring App
+        return .{ .resume_input = false };
+    }
+
+    fn commit_handler(self: *Self) !input.HandlerResult {
+        // TODO: error handling from event handlers
+
+        // Unlike the other handlers, we do commit synchronously,
+        // since we have to give control over to the user's editor.
+        term.restore(self.original_termios) catch {};
+        defer _ = term.enter_raw_mode() catch {};
+
+        git.commit(self.allocator) catch {};
+        self.job_queue.put(.refresh) catch {};
+        return .{};
+    }
+
+    fn stage_handler(self: *Self) !input.HandlerResult {
+        if (self.user_state.section != .untracked and self.user_state.section != .unstaged) {
+            return .{};
+        }
+
+        const deltas = self.current_deltas() orelse return .{};
+        if (deltas.items.len == 0) {
+            return .{};
+        }
+
+        const paths = try self.current_pos_paths(deltas);
+        if (self.user_state.pos == deltas.items.len) {
+            self.user_state.pos -= 1;
+        }
+        try self.job_queue.put(.{ .stage = paths });
+
+        return .{};
+    }
+
+    fn toggle_expand_handler(self: *Self) !input.HandlerResult {
+        switch (self.user_state.section) {
+            .untracked => {
+                self.user_state.untracked_expanded = !self.user_state.untracked_expanded;
+                if (!self.user_state.untracked_expanded) {
+                    self.user_state.pos = 0;
+                }
+            },
+            .unstaged => {
+                self.user_state.unstaged_expanded = !self.user_state.unstaged_expanded;
+                if (!self.user_state.unstaged_expanded) {
+                    self.user_state.pos = 0;
+                }
+            },
+            .staged => {
+                self.user_state.staged_expanded = !self.user_state.staged_expanded;
+                if (!self.user_state.staged_expanded) {
+                    self.user_state.pos = 0;
+                }
+            },
+            else => {},
+        }
+        return .{};
+    }
+
+    fn unstage_handler(self: *Self) !input.HandlerResult {
+        if (self.user_state.section != .staged) {
+            return .{};
+        }
+
+        const deltas = self.current_deltas() orelse return .{};
+        if (deltas.items.len == 0) {
+            return .{};
+        }
+
+        const paths = try self.current_pos_paths(deltas);
+        if (self.user_state.pos == deltas.items.len) {
+            self.user_state.pos -= 1;
+        }
+        try self.job_queue.put(.{ .unstage = paths });
+
+        return .{};
+    }
+
+    ////////////////////
+    // Helper Methods //
+    ////////////////////
+    fn current_deltas(self: *const Self) ?*const std.ArrayList(ui.FileItem) {
+        const repo_state = &(self.repo_state orelse return null);
+        switch (self.user_state.section) {
+            .untracked => return &repo_state.untracked,
+            .unstaged => return &repo_state.unstaged,
+            .staged => return &repo_state.staged,
+            else => return null,
+        }
+    }
+
+    fn current_pos_paths(
+        self: *const Self,
+        deltas: *const std.ArrayList(ui.FileItem),
+    ) ![]const []const u8 {
+        if (self.user_state.pos == 0) {
+            var paths = try self.allocator.alloc([]const u8, deltas.items.len);
+            for (0.., deltas.items) |i, delta| {
+                paths[i] = delta.path;
+            }
+            return paths;
+        }
+
+        const delta = deltas.items[self.user_state.pos - 1];
+        var paths = try self.allocator.alloc([]const u8, 1);
+        paths[0] = delta.path;
+        return paths;
     }
 };
 
@@ -165,11 +447,12 @@ pub const InputState = struct {
         _ = ctx;
     }
 
-    pub fn handle(state: *State, loop_event: LoopEvent) State.Result {
+    pub fn handle(state: *State, ctx: State.HandleContext, event: Event) State.Result {
         const self: *Self = @ptrCast(@alignCast(state.context));
         // TODO: handle input
         _ = self;
-        switch (loop_event) {
+        _ = ctx;
+        switch (event) {
             .input => |input_evt| {
                 if (input_evt.eql(.{ .key = .Escape })) {
                     return .pop;
@@ -185,34 +468,39 @@ const App = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    event_queue: *queue.LockstepQueue(LoopEvent),
-    input_map: *input.InputMap(*Self),
+    event_queue: *queue.LockstepQueue(Event),
     job_queue: *queue.Queue(Job),
     original_termios: std.posix.termios,
-    repo_state: ?ui.RepoState,
     states: std.ArrayList(State),
-    user_state: ui.UserState,
 
     pub fn init(allocator: std.mem.Allocator) !*Self {
         const original_termios = try term.enter_raw_mode();
         errdefer term.restore(original_termios) catch {};
 
-        var event_queue = try queue.LockstepQueue(LoopEvent).init(allocator);
+        var event_queue = try queue.LockstepQueue(Event).init(allocator);
         errdefer event_queue.deinit();
 
         var job_queue = try queue.Queue(Job).init(allocator);
         errdefer job_queue.deinit();
 
+        var states = std.ArrayList(State).empty;
+        errdefer {
+            for (states.items) |*state| {
+                state.deinit();
+            }
+            states.deinit(allocator);
+        }
+
+        const base_state = try BaseState.init(allocator, job_queue, original_termios);
+        try states.append(allocator, base_state.as_state());
+
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
             .event_queue = event_queue,
-            .input_map = try .init(allocator),
             .job_queue = job_queue,
             .original_termios = original_termios,
-            .repo_state = null,
-            .states = .empty,
-            .user_state = ui.UserState.init(allocator),
+            .states = states,
         };
         return self;
     }
@@ -220,17 +508,55 @@ const App = struct {
     pub fn deinit(self: *App) void {
         term.restore(self.original_termios) catch {};
         self.event_queue.deinit();
-        self.input_map.deinit();
         self.job_queue.deinit();
-        if (self.repo_state) |*repo_state| {
-            repo_state.deinit(self.allocator);
-        }
         for (self.states.items) |*state| {
             state.deinit();
         }
         self.states.deinit(self.allocator);
-        self.user_state.deinit();
         self.allocator.destroy(self);
+    }
+
+    fn foreground_main(self: *Self) !void {
+        while (true) {
+            for (self.states.items) |state| {
+                try state.paint(.{ .term_height = 0, .term_width = 0 });
+            }
+
+            const evt = self.event_queue.get();
+            defer self.event_queue.next();
+
+            for (0..self.states.items.len) |i| {
+                const result = try self.states.items[self.states.items.len - 1 - i].handle(
+                    .{
+                        .job_queue = self.job_queue,
+                        .original_termios = self.original_termios,
+                    },
+                    evt,
+                );
+                switch (result) {
+                    .exit => {
+                        return;
+                    },
+                    .pass => {
+                        continue;
+                    },
+                    .pop => {
+                        if (self.states.pop()) |popped_state| {
+                            var state = popped_state;
+                            state.deinit();
+                        }
+                    },
+                    .push => |state| {
+                        try self.states.append(self.allocator, state);
+                    },
+                    .stop => {
+                        // Intentionally empty, to do nothing
+                        // but stop the next state from handling input.
+                    },
+                }
+                break;
+            }
+        }
     }
 
     /// `input_thread_main` runs in the background fetching input from the user,
@@ -332,299 +658,5 @@ pub fn main() !void {
         .{app},
     );
 
-    try app.input_map.add(
-        &[_]input.Input{.{ .key = .Up }},
-        arrow_up_handler,
-    );
-    try app.input_map.add(
-        &[_]input.Input{.{ .key = .Down }},
-        arrow_down_handler,
-    );
-    try app.input_map.add(
-        &[_]input.Input{.{ .key = .B }},
-        branch_handler,
-    );
-    try app.input_map.add(
-        &[_]input.Input{ .{ .key = .C }, .{ .key = .C } },
-        commit_handler,
-    );
-    try app.input_map.add(
-        &[_]input.Input{.{ .key = .S }},
-        stage_handler,
-    );
-    try app.input_map.add(
-        &[_]input.Input{.{ .key = .Tab }},
-        toggle_expand_handler,
-    );
-    try app.input_map.add(
-        &[_]input.Input{.{ .key = .U }},
-        unstage_handler,
-    );
-
-    var curr_input_map: *input.InputMap(*App) = app.input_map;
-    const stdout = std.fs.File.stdout();
-    while (true) {
-        if (app.repo_state) |*repo_state| {
-            try ui.paint(allocator, &app.user_state, repo_state, stdout);
-        }
-        for (app.states.items) |state| {
-            state.paint(.{ .term_height = 0, .term_width = 0 });
-        }
-
-        const evt = app.event_queue.get();
-        defer app.event_queue.next();
-
-        for (0..app.states.items.len) |i| {
-            const result = app.states.items[app.states.items.len - 1 - i].handle(evt);
-            switch (result) {
-                .pass => {
-                    continue;
-                },
-                .pop => {
-                    if (app.states.items.len > 0) {
-                        app.states.items[app.states.items.len - 1].deinit();
-                    }
-                    _ = app.states.pop();
-                },
-                .push => |state| {
-                    try app.states.append(app.allocator, state);
-                },
-                .stop => {
-                    // Intentionally omitted,
-                    // so that we'll break below.
-                },
-            }
-            break;
-        }
-
-        switch (evt) {
-            .input => |input_evt| {
-                if (input_evt.eql(.{ .key = .Escape }) or
-                    input_evt.eql(.{ .key = .Q }) or
-                    input_evt.eql(.{ .key = .C, .modifiers = .{ .ctrl = true } }))
-                {
-                    if (curr_input_map == app.input_map) {
-                        break;
-                    }
-                    curr_input_map = app.input_map;
-                    continue;
-                }
-
-                const next_input_map = curr_input_map.get(input_evt) orelse {
-                    curr_input_map = app.input_map;
-                    continue;
-                };
-
-                var resume_input = true;
-                if (next_input_map.handler) |handler| {
-                    const result = try handler(app);
-                    resume_input = result.resume_input;
-                }
-            },
-            .repo_state => |new_repo_state| {
-                if (app.repo_state) |*repo_state| {
-                    repo_state.deinit(allocator);
-                }
-                app.repo_state = new_repo_state;
-            },
-        }
-    }
-}
-
-////////////////////
-// Input Handlers //
-////////////////////
-fn arrow_up_handler(app: *App) !input.HandlerResult {
-    const repo_state = &(app.repo_state orelse return .{});
-    switch (app.user_state.section) {
-        .head => {
-            // Intentionally ignored, since there's nothing above here.
-        },
-        .untracked => {
-            if (!app.user_state.untracked_expanded or app.user_state.pos == 0) {
-                app.user_state.pos = 0;
-                app.user_state.section = .head;
-            } else {
-                app.user_state.pos -= 1;
-            }
-        },
-        .unstaged => {
-            if (!app.user_state.unstaged_expanded or app.user_state.pos == 0) {
-                if (app.user_state.untracked_expanded) {
-                    app.user_state.pos = repo_state.untracked.items.len;
-                } else {
-                    app.user_state.pos = 0;
-                }
-                app.user_state.section = .untracked;
-            } else {
-                app.user_state.pos -= 1;
-            }
-        },
-        .staged => {
-            if (!app.user_state.staged_expanded or app.user_state.pos == 0) {
-                if (app.user_state.unstaged_expanded) {
-                    app.user_state.pos = repo_state.unstaged.items.len;
-                } else {
-                    app.user_state.pos = 0;
-                }
-                app.user_state.section = .unstaged;
-            } else {
-                app.user_state.pos -= 1;
-            }
-        },
-    }
-    return .{};
-}
-
-fn arrow_down_handler(app: *App) !input.HandlerResult {
-    const repo_state = app.repo_state orelse return .{};
-    switch (app.user_state.section) {
-        .head => {
-            app.user_state.pos = 0;
-            app.user_state.section = .untracked;
-        },
-        .untracked => {
-            if (!app.user_state.untracked_expanded or
-                app.user_state.pos == repo_state.untracked.items.len)
-            {
-                app.user_state.pos = 0;
-                app.user_state.section = .unstaged;
-            } else {
-                app.user_state.pos += 1;
-            }
-        },
-        .unstaged => {
-            if (!app.user_state.unstaged_expanded or
-                app.user_state.pos == repo_state.unstaged.items.len)
-            {
-                app.user_state.pos = 0;
-                app.user_state.section = .staged;
-            } else {
-                app.user_state.pos += 1;
-            }
-        },
-        .staged => {
-            if (!app.user_state.staged_expanded or
-                app.user_state.pos >= repo_state.staged.items.len)
-            {
-                // Intentionally ignored, since there's nothing past here.
-            } else {
-                app.user_state.pos += 1;
-            }
-        },
-    }
-    return .{};
-}
-
-fn branch_handler(app: *App) !input.HandlerResult {
-    const input_state = try InputState.init(app.allocator, &[_][]const u8{});
-    try app.states.append(app.allocator, input_state.as_state());
-    return .{};
-}
-
-fn commit_handler(app: *App) !input.HandlerResult {
-    // TODO: error handling from event handlers
-
-    // Unlike the other handlers, we do commit synchronously,
-    // since we have to give control over to the user's editor.
-    term.restore(app.original_termios) catch {};
-    defer _ = term.enter_raw_mode() catch {};
-
-    git.commit(app.allocator) catch {};
-    app.job_queue.put(.refresh) catch {};
-    return .{};
-}
-
-fn stage_handler(app: *App) !input.HandlerResult {
-    if (app.user_state.section != .untracked and app.user_state.section != .unstaged) {
-        return .{};
-    }
-
-    const deltas = current_deltas(app) orelse return .{};
-    if (deltas.items.len == 0) {
-        return .{};
-    }
-
-    const paths = try current_pos_paths(app, deltas);
-    if (app.user_state.pos == deltas.items.len) {
-        app.user_state.pos -= 1;
-    }
-    try app.job_queue.put(.{ .stage = paths });
-
-    return .{};
-}
-
-fn toggle_expand_handler(app: *App) !input.HandlerResult {
-    switch (app.user_state.section) {
-        .untracked => {
-            app.user_state.untracked_expanded = !app.user_state.untracked_expanded;
-            if (!app.user_state.untracked_expanded) {
-                app.user_state.pos = 0;
-            }
-        },
-        .unstaged => {
-            app.user_state.unstaged_expanded = !app.user_state.unstaged_expanded;
-            if (!app.user_state.unstaged_expanded) {
-                app.user_state.pos = 0;
-            }
-        },
-        .staged => {
-            app.user_state.staged_expanded = !app.user_state.staged_expanded;
-            if (!app.user_state.staged_expanded) {
-                app.user_state.pos = 0;
-            }
-        },
-        else => {},
-    }
-    return .{};
-}
-
-fn unstage_handler(app: *App) !input.HandlerResult {
-    if (app.user_state.section != .staged) {
-        return .{};
-    }
-
-    const deltas = current_deltas(app) orelse return .{};
-    if (deltas.items.len == 0) {
-        return .{};
-    }
-
-    const paths = try current_pos_paths(app, deltas);
-    if (app.user_state.pos == deltas.items.len) {
-        app.user_state.pos -= 1;
-    }
-    try app.job_queue.put(.{ .unstage = paths });
-
-    return .{};
-}
-
-/////////////
-// Helpers //
-/////////////
-fn current_deltas(app: *const App) ?*const std.ArrayList(ui.FileItem) {
-    const repo_state = &(app.repo_state orelse return null);
-    switch (app.user_state.section) {
-        .untracked => return &repo_state.untracked,
-        .unstaged => return &repo_state.unstaged,
-        .staged => return &repo_state.staged,
-        else => return null,
-    }
-}
-
-fn current_pos_paths(
-    app: *const App,
-    deltas: *const std.ArrayList(ui.FileItem),
-) ![]const []const u8 {
-    if (app.user_state.pos == 0) {
-        var paths = try app.allocator.alloc([]const u8, deltas.items.len);
-        for (0.., deltas.items) |i, delta| {
-            paths[i] = delta.path;
-        }
-        return paths;
-    }
-
-    const delta = deltas.items[app.user_state.pos - 1];
-    var paths = try app.allocator.alloc([]const u8, 1);
-    paths[0] = delta.path;
-    return paths;
+    try app.foreground_main();
 }
