@@ -61,6 +61,54 @@ pub const State = struct {
     }
 };
 
+/// BaseState represents the universal state of the program.
+/// This is the state that is running when the program starts,
+/// and it can never be removed from the running program.
+pub const BaseState = struct {
+    const Self = @This();
+
+    const vtable = State.VTable{
+        .deinit = &Self.deinit,
+        .paint = &Self.paint,
+        .handle = &Self.handle,
+    };
+
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!*Self {
+        const self = try allocator.create(Self);
+        errdefer allocator.destroy(self);
+        self.* = .{
+            .allocator = allocator,
+        };
+        return self;
+    }
+
+    pub fn deinit(state: State) void {
+        const self: *Self = @ptrCast(@alignCast(state.context));
+        self.allocator.destroy(self);
+    }
+
+    pub fn paint(state: State, ctx: State.PaintContext) void {
+        _ = state;
+        _ = ctx;
+    }
+
+    pub fn handle(state: State, loop_event: LoopEvent) State.Result {
+        _ = state;
+        _ = loop_event;
+    }
+};
+
+/// InputState is used when you want to collect input from the user.
+/// It renders a prompt over the center of the screen.
+///
+/// (TODO) You can also optionally include a series of options,
+/// which will be fuzzy-filtered with the current input.
+///
+/// (TODO) The user can either cancel (ESC) and no side effect will happen,
+/// or it will pop itself from the state stack and call a callback
+/// with the final value.
 pub const InputState = struct {
     const Self = @This();
 
