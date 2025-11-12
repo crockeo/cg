@@ -662,3 +662,8 @@ pub fn main() !void {
 
     try app.foreground_main();
 }
+
+test "ref other tests" {
+    _ = @import("utils.zig");
+    std.testing.refAllDecls(@This());
+}
