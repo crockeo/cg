@@ -148,23 +148,15 @@ pub const BaseState = struct {
         const self: *Self = @ptrCast(@alignCast(state.context));
 
         switch (event) {
-            .repo_state => |new_repo_state| {
-                if (self.repo_state) |*repo_state| {
-                    repo_state.deinit(self.allocator);
-                }
-                self.repo_state = new_repo_state;
-                return .pass;
-            },
             .input => |input_evt| {
-                if (input_evt.eql(.{ .key = .Escape }) or
+                if (input_evt.eql(.{ .key = .Escape }) and self.curr_input_map != self.input_map) {
+                    self.curr_input_map = self.input_map;
+                    return .stop;
+                } else if (input_evt.eql(.{ .key = .Escape }) or
                     input_evt.eql(.{ .key = .Q }) or
                     input_evt.eql(.{ .key = .C, .modifiers = .{ .ctrl = true } }))
                 {
-                    if (self.curr_input_map == self.input_map) {
-                        return .exit;
-                    }
-                    self.curr_input_map = self.input_map;
-                    return .stop;
+                    return .exit;
                 }
 
                 const next_input_map = self.curr_input_map.get(input_evt) orelse {
@@ -177,6 +169,14 @@ pub const BaseState = struct {
                     return .stop;
                 }
 
+                return .stop;
+            },
+            .repo_state => |new_repo_state| {
+                if (self.repo_state) |*repo_state| {
+                    repo_state.deinit(self.allocator);
+                }
+                // TODO: reconcile this with user state
+                self.repo_state = new_repo_state;
                 return .stop;
             },
         }
@@ -271,7 +271,7 @@ pub const BaseState = struct {
         _ = self;
         // TODO: push InputState to state stack
         // For now just returning, will implement after refactoring App
-        return .{ .resume_input = false };
+        return .{};
     }
 
     fn commit_handler(self: *Self) !input.HandlerResult {
@@ -516,6 +516,8 @@ const App = struct {
         self.allocator.destroy(self);
     }
 
+    /// `foreground_main` runs in a loop in the foreground,
+    /// painting the UI and reacting to events from the background threads.
     fn foreground_main(self: *Self) !void {
         while (true) {
             for (self.states.items) |state| {

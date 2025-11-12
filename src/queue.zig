@@ -157,7 +157,7 @@ pub fn LockstepQueue(comptime T: type) type {
 
             _ = self.queue.orderedRemove(0);
             if (self.queue.items.len == 0) {
-                self.write_available.signal();
+                self.write_available.broadcast();
             }
         }
     };

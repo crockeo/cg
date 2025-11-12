@@ -1,8 +1,6 @@
 const std = @import("std");
 
-pub const HandlerResult = struct {
-    resume_input: bool = true,
-};
+pub const HandlerResult = struct {};
 
 pub fn InputMap(comptime T: type) type {
     return struct {
