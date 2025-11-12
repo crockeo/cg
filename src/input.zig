@@ -1,11 +1,9 @@
 const std = @import("std");
 
-pub const HandlerResult = struct {};
-
-pub fn InputMap(comptime T: type) type {
+pub fn InputMap(comptime T: type, comptime R: type) type {
     return struct {
         const Self = @This();
-        const Handler = *const fn (T) error{OutOfMemory}!HandlerResult;
+        const Handler = *const fn (T) error{OutOfMemory}!R;
 
         allocator: std.mem.Allocator,
         assoc: std.AutoHashMap(Input, *Self),

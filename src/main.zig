@@ -39,10 +39,19 @@ pub const State = struct {
     };
 
     const Result = union(enum) {
+        /// Used to trigger program exit.
         exit: void,
+
+        /// Used to pass control to the next state in the stack.
         pass: void,
+
+        /// Used to pop the top state off of the stack.
         pop: void,
+
+        /// Used to push a new state onto the stack.
         push: State,
+
+        /// Used to stop executing handlers.
         stop: void,
     };
 
@@ -83,8 +92,8 @@ pub const BaseState = struct {
     };
 
     allocator: std.mem.Allocator,
-    curr_input_map: *input.InputMap(*Self),
-    input_map: *input.InputMap(*Self),
+    curr_input_map: *input.InputMap(*Self, State.Result),
+    input_map: *input.InputMap(*Self, State.Result),
     job_queue: *queue.Queue(Job),
     original_termios: std.posix.termios,
     repo_state: ?ui.RepoState,
@@ -94,7 +103,7 @@ pub const BaseState = struct {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
 
-        const input_map = try input.InputMap(*Self).init(allocator);
+        const input_map = try input.InputMap(*Self, State.Result).init(allocator);
         errdefer input_map.deinit();
 
         self.* = .{
@@ -165,8 +174,7 @@ pub const BaseState = struct {
                 };
 
                 if (next_input_map.handler) |handler| {
-                    _ = try handler(self);
-                    return .stop;
+                    return try handler(self);
                 }
 
                 return .stop;
@@ -185,8 +193,8 @@ pub const BaseState = struct {
     ////////////////////
     // Input Handlers //
     ////////////////////
-    fn arrow_up_handler(self: *Self) !input.HandlerResult {
-        const repo_state = &(self.repo_state orelse return .{});
+    fn arrow_up_handler(self: *Self) !State.Result {
+        const repo_state = &(self.repo_state orelse return .stop);
         switch (self.user_state.section) {
             .head => {
                 // Intentionally ignored, since there's nothing above here.
@@ -224,11 +232,11 @@ pub const BaseState = struct {
                 }
             },
         }
-        return .{};
+        return .stop;
     }
 
-    fn arrow_down_handler(self: *Self) !input.HandlerResult {
-        const repo_state = self.repo_state orelse return .{};
+    fn arrow_down_handler(self: *Self) !State.Result {
+        const repo_state = self.repo_state orelse return .stop;
         switch (self.user_state.section) {
             .head => {
                 self.user_state.pos = 0;
@@ -264,17 +272,15 @@ pub const BaseState = struct {
                 }
             },
         }
-        return .{};
+        return .stop;
     }
 
-    fn branch_handler(self: *Self) !input.HandlerResult {
-        _ = self;
-        // TODO: push InputState to state stack
-        // For now just returning, will implement after refactoring App
-        return .{};
+    fn branch_handler(self: *Self) !State.Result {
+        const input_state = try InputState.init(self.allocator);
+        return .{ .push = input_state.as_state() };
     }
 
-    fn commit_handler(self: *Self) !input.HandlerResult {
+    fn commit_handler(self: *Self) !State.Result {
         // TODO: error handling from event handlers
 
         // Unlike the other handlers, we do commit synchronously,
@@ -284,17 +290,17 @@ pub const BaseState = struct {
 
         git.commit(self.allocator) catch {};
         self.job_queue.put(.refresh) catch {};
-        return .{};
+        return .stop;
     }
 
-    fn stage_handler(self: *Self) !input.HandlerResult {
+    fn stage_handler(self: *Self) !State.Result {
         if (self.user_state.section != .untracked and self.user_state.section != .unstaged) {
-            return .{};
+            return .stop;
         }
 
-        const deltas = self.current_deltas() orelse return .{};
+        const deltas = self.current_deltas() orelse return .stop;
         if (deltas.items.len == 0) {
-            return .{};
+            return .stop;
         }
 
         const paths = try self.current_pos_paths(deltas);
@@ -303,10 +309,10 @@ pub const BaseState = struct {
         }
         try self.job_queue.put(.{ .stage = paths });
 
-        return .{};
+        return .stop;
     }
 
-    fn toggle_expand_handler(self: *Self) !input.HandlerResult {
+    fn toggle_expand_handler(self: *Self) !State.Result {
         switch (self.user_state.section) {
             .untracked => {
                 self.user_state.untracked_expanded = !self.user_state.untracked_expanded;
@@ -328,17 +334,17 @@ pub const BaseState = struct {
             },
             else => {},
         }
-        return .{};
+        return .stop;
     }
 
-    fn unstage_handler(self: *Self) !input.HandlerResult {
+    fn unstage_handler(self: *Self) !State.Result {
         if (self.user_state.section != .staged) {
-            return .{};
+            return .stop;
         }
 
-        const deltas = self.current_deltas() orelse return .{};
+        const deltas = self.current_deltas() orelse return .stop;
         if (deltas.items.len == 0) {
-            return .{};
+            return .stop;
         }
 
         const paths = try self.current_pos_paths(deltas);
@@ -347,7 +353,7 @@ pub const BaseState = struct {
         }
         try self.job_queue.put(.{ .unstage = paths });
 
-        return .{};
+        return .stop;
     }
 
     ////////////////////
@@ -385,12 +391,8 @@ pub const BaseState = struct {
 /// InputState is used when you want to collect input from the user.
 /// It renders a prompt over the center of the screen.
 ///
-/// (TODO) You can also optionally include a series of options,
-/// which will be fuzzy-filtered with the current input.
-///
-/// (TODO) The user can either cancel (ESC) and no side effect will happen,
-/// or it will pop itself from the state stack and call a callback
-/// with the final value.
+/// The user can either cancel (ESC) and no side effect will happen,
+/// or press Enter and it will pop itself from the state stack.
 pub const InputState = struct {
     const Self = @This();
 
@@ -402,23 +404,13 @@ pub const InputState = struct {
 
     allocator: std.mem.Allocator,
     contents: std.ArrayList(u8),
-    options: []const []const u8,
 
-    pub fn init(allocator: std.mem.Allocator, options: []const []const u8) error{OutOfMemory}!*Self {
-        var options_dupe = try allocator.alloc([]const u8, options.len);
-        errdefer allocator.free(options_dupe);
-
-        for (0.., options) |i, option| {
-            options_dupe[i] = try allocator.dupe(u8, option);
-            errdefer allocator.free(options_dupe[i]);
-        }
-
+    pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!*Self {
         const self = try allocator.create(Self);
-        errdefer allocator.free(self);
+        errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
             .contents = .empty,
-            .options = options_dupe,
         };
         return self;
     }
@@ -433,34 +425,102 @@ pub const InputState = struct {
     pub fn deinit(state: *State) void {
         const self: *Self = @ptrCast(@alignCast(state.context));
         self.contents.deinit(self.allocator);
-        for (self.options) |option| {
-            self.allocator.free(option);
-        }
-        self.allocator.free(self.options);
         self.allocator.destroy(self);
     }
 
-    pub fn paint(state: *const State, ctx: State.PaintContext) void {
+    pub fn paint(state: *const State, ctx: State.PaintContext) CGError!void {
         const self: *const Self = @ptrCast(@alignCast(state.context));
-        // TODO: paint
-        _ = self;
-        _ = ctx;
+        const stdout = std.fs.File.stdout();
+
+        const center_row = ctx.term_height / 2;
+        const prompt = "> ";
+        const total_length = prompt.len + self.contents.items.len;
+        const center_col = if (ctx.term_width > total_length) (ctx.term_width - total_length) / 2 else 0;
+
+        var buf: [256]u8 = undefined;
+        const cursor_pos = std.fmt.bufPrint(&buf, "\x1b[{d};{d}H", .{ center_row, center_col }) catch {
+            return error.OutOfMemory;
+        };
+        stdout.writeAll(cursor_pos) catch {};
+        stdout.writeAll(prompt) catch {};
+        stdout.writeAll(self.contents.items) catch {};
     }
 
-    pub fn handle(state: *State, ctx: State.HandleContext, event: Event) State.Result {
+    pub fn handle(state: *State, ctx: State.HandleContext, event: Event) CGError!State.Result {
         const self: *Self = @ptrCast(@alignCast(state.context));
-        // TODO: handle input
-        _ = self;
         _ = ctx;
+
         switch (event) {
             .input => |input_evt| {
+                // Handle escape and enter
                 if (input_evt.eql(.{ .key = .Escape })) {
                     return .pop;
                 }
+                if (input_evt.eql(.{ .key = .Enter })) {
+                    return .pop;
+                }
+
+                // Handle backspace
+                if (input_evt.eql(.{ .key = .Backspace })) {
+                    if (self.contents.items.len > 0) {
+                        _ = self.contents.pop();
+                    }
+                    return .stop;
+                }
+
+                // Handle printable characters
+                const char: ?u8 = switch (input_evt.key) {
+                    .A => if (input_evt.modifiers.shift) 'A' else 'a',
+                    .B => if (input_evt.modifiers.shift) 'B' else 'b',
+                    .C => if (input_evt.modifiers.shift) 'C' else 'c',
+                    .D => if (input_evt.modifiers.shift) 'D' else 'd',
+                    .E => if (input_evt.modifiers.shift) 'E' else 'e',
+                    .F => if (input_evt.modifiers.shift) 'F' else 'f',
+                    .G => if (input_evt.modifiers.shift) 'G' else 'g',
+                    .H => if (input_evt.modifiers.shift) 'H' else 'h',
+                    .I => if (input_evt.modifiers.shift) 'I' else 'i',
+                    .J => if (input_evt.modifiers.shift) 'J' else 'j',
+                    .K => if (input_evt.modifiers.shift) 'K' else 'k',
+                    .L => if (input_evt.modifiers.shift) 'L' else 'l',
+                    .M => if (input_evt.modifiers.shift) 'M' else 'm',
+                    .N => if (input_evt.modifiers.shift) 'N' else 'n',
+                    .O => if (input_evt.modifiers.shift) 'O' else 'o',
+                    .P => if (input_evt.modifiers.shift) 'P' else 'p',
+                    .Q => if (input_evt.modifiers.shift) 'Q' else 'q',
+                    .R => if (input_evt.modifiers.shift) 'R' else 'r',
+                    .S => if (input_evt.modifiers.shift) 'S' else 's',
+                    .T => if (input_evt.modifiers.shift) 'T' else 't',
+                    .U => if (input_evt.modifiers.shift) 'U' else 'u',
+                    .V => if (input_evt.modifiers.shift) 'V' else 'v',
+                    .W => if (input_evt.modifiers.shift) 'W' else 'w',
+                    .X => if (input_evt.modifiers.shift) 'X' else 'x',
+                    .Y => if (input_evt.modifiers.shift) 'Y' else 'y',
+                    .Z => if (input_evt.modifiers.shift) 'Z' else 'z',
+                    .Zero => '0',
+                    .One => '1',
+                    .Two => '2',
+                    .Three => '3',
+                    .Four => '4',
+                    .Five => '5',
+                    .Six => '6',
+                    .Seven => '7',
+                    .Eight => '8',
+                    .Nine => '9',
+                    .Space => ' ',
+                    else => null,
+                };
+
+                if (char) |c| {
+                    try self.contents.append(self.allocator, c);
+                    return .stop;
+                }
+
+                return .pass;
             },
-            else => {},
+            .repo_state => {
+                return .pass;
+            },
         }
-        return .pass;
     }
 };
 
@@ -520,8 +580,9 @@ const App = struct {
     /// painting the UI and reacting to events from the background threads.
     fn foreground_main(self: *Self) !void {
         while (true) {
+            const window_size = try term.get_window_size();
             for (self.states.items) |state| {
-                try state.paint(.{ .term_height = 0, .term_width = 0 });
+                try state.paint(.{ .term_height = window_size.rows, .term_width = window_size.cols });
             }
 
             const evt = self.event_queue.get();
