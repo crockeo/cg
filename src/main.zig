@@ -22,6 +22,117 @@ const Job = union(enum) {
     unstage: []const []const u8,
 };
 
+pub const State = struct {
+    const Self = @This();
+
+    const PaintContext = struct {
+        term_height: usize,
+        term_width: usize,
+    };
+
+    const Result = union(enum) {
+        pass: void,
+        pop: void,
+        push: State,
+        stop: void,
+    };
+
+    const VTable = struct {
+        deinit: ?*const fn (self: *Self) void,
+        paint: *const fn (self: *const Self, PaintContext) void,
+        handle: *const fn (self: *Self, LoopEvent) Result,
+    };
+
+    context: *anyopaque,
+    vtable: *const VTable,
+
+    pub fn deinit(self: *Self) void {
+        if (self.vtable.deinit) |deinit_fn| {
+            deinit_fn(self);
+        }
+    }
+
+    pub fn paint(self: *const Self, ctx: PaintContext) void {
+        self.vtable.paint(self, ctx);
+    }
+
+    pub fn handle(self: *Self, loop_event: LoopEvent) Result {
+        return self.vtable.handle(self, loop_event);
+    }
+};
+
+pub const InputState = struct {
+    const Self = @This();
+
+    const vtable = State.VTable{
+        .deinit = &Self.deinit,
+        .paint = &Self.paint,
+        .handle = &Self.handle,
+    };
+
+    allocator: std.mem.Allocator,
+    contents: std.ArrayList(u8),
+    options: []const []const u8,
+
+    pub fn init(allocator: std.mem.Allocator, options: []const []const u8) error{OutOfMemory}!*Self {
+        var options_dupe = try allocator.alloc([]const u8, options.len);
+        errdefer allocator.free(options_dupe);
+
+        for (0.., options) |i, option| {
+            options_dupe[i] = try allocator.dupe(u8, option);
+            errdefer allocator.free(options_dupe[i]);
+        }
+
+        const self = try allocator.create(Self);
+        errdefer allocator.free(self);
+        self.* = .{
+            .allocator = allocator,
+            .contents = .empty,
+            .options = options_dupe,
+        };
+        return self;
+    }
+
+    pub fn as_state(self: *Self) State {
+        return .{
+            .context = @ptrCast(self),
+            .vtable = &Self.vtable,
+        };
+    }
+
+    pub fn deinit(state: *State) void {
+        const self: *Self = @ptrCast(@alignCast(state.context));
+        self.contents.deinit(self.allocator);
+        for (self.options) |option| {
+            self.allocator.free(option);
+        }
+        self.allocator.free(self.options);
+        self.allocator.destroy(self);
+    }
+
+    pub fn paint(state: *const State, ctx: State.PaintContext) void {
+        const self: *const Self = @ptrCast(@alignCast(state.context));
+        // TODO: paint
+        _ = self;
+        _ = ctx;
+    }
+
+    pub fn handle(state: *State, loop_event: LoopEvent) State.Result {
+        const self: *Self = @ptrCast(@alignCast(state.context));
+        // TODO: handle input
+        _ = self;
+        switch (loop_event) {
+            .input => |input_evt| {
+                if (input_evt.eql(.{ .key = .Escape })) {
+                    return .pop;
+                }
+            },
+            else => {},
+        }
+        return .pass;
+    }
+};
+
 const App = struct {
     const Self = @This();
 
@@ -31,6 +142,7 @@ const App = struct {
     job_queue: *queue.Queue(Job),
     original_termios: std.posix.termios,
     repo_state: ?ui.RepoState,
+    states: std.ArrayList(State),
     user_state: ui.UserState,
 
     pub fn init(allocator: std.mem.Allocator) !*Self {
@@ -50,21 +162,26 @@ const App = struct {
             .input_map = try .init(allocator),
             .job_queue = job_queue,
             .original_termios = original_termios,
-            .user_state = ui.UserState.init(allocator),
             .repo_state = null,
+            .states = .empty,
+            .user_state = ui.UserState.init(allocator),
         };
         return self;
     }
 
     pub fn deinit(self: *App) void {
         term.restore(self.original_termios) catch {};
+        self.event_queue.deinit();
         self.input_map.deinit();
+        self.job_queue.deinit();
         if (self.repo_state) |*repo_state| {
             repo_state.deinit(self.allocator);
         }
+        for (self.states.items) |*state| {
+            state.deinit();
+        }
+        self.states.deinit(self.allocator);
         self.user_state.deinit();
-        self.job_queue.deinit();
-        self.event_queue.deinit();
         self.allocator.destroy(self);
     }
 
@@ -176,6 +293,10 @@ pub fn main() !void {
         arrow_down_handler,
     );
     try app.input_map.add(
+        &[_]input.Input{.{ .key = .B }},
+        branch_handler,
+    );
+    try app.input_map.add(
         &[_]input.Input{ .{ .key = .C }, .{ .key = .C } },
         commit_handler,
     );
@@ -198,9 +319,36 @@ pub fn main() !void {
         if (app.repo_state) |*repo_state| {
             try ui.paint(allocator, &app.user_state, repo_state, stdout);
         }
+        for (app.states.items) |state| {
+            state.paint(.{ .term_height = 0, .term_width = 0 });
+        }
 
         const evt = app.event_queue.get();
         defer app.event_queue.next();
+
+        for (0..app.states.items.len) |i| {
+            const result = app.states.items[app.states.items.len - 1 - i].handle(evt);
+            switch (result) {
+                .pass => {
+                    continue;
+                },
+                .pop => {
+                    if (app.states.items.len > 0) {
+                        app.states.items[app.states.items.len - 1].deinit();
+                    }
+                    _ = app.states.pop();
+                },
+                .push => |state| {
+                    try app.states.append(app.allocator, state);
+                },
+                .stop => {
+                    // Intentionally omitted,
+                    // so that we'll break below.
+                },
+            }
+            break;
+        }
+
         switch (evt) {
             .input => |input_evt| {
                 if (input_evt.eql(.{ .key = .Escape }) or
@@ -317,6 +465,12 @@ fn arrow_down_handler(app: *App) !input.HandlerResult {
             }
         },
     }
+    return .{};
+}
+
+fn branch_handler(app: *App) !input.HandlerResult {
+    const input_state = try InputState.init(app.allocator, &[_][]const u8{});
+    try app.states.append(app.allocator, input_state.as_state());
     return .{};
 }
 
