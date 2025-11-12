@@ -1,5 +1,30 @@
 const std = @import("std");
 
+pub const WindowSize = struct {
+    rows: usize,
+    cols: usize,
+};
+
+pub fn get_window_size() !WindowSize {
+    const stdout = std.fs.File.stdout();
+    var winsize: std.posix.winsize = .{
+        .row = 0,
+        .col = 0,
+        .xpixel = 0,
+        .ypixel = 0,
+    };
+
+    const err = std.posix.system.ioctl(stdout.handle, std.posix.T.IOCGWINSZ, @intFromPtr(&winsize));
+    if (std.posix.errno(err) != .SUCCESS) {
+        return error.FailedToGetWindowSize;
+    }
+
+    return .{
+        .rows = winsize.row,
+        .cols = winsize.col,
+    };
+}
+
 pub fn enter_raw_mode() !std.posix.termios {
     const stdout = std.fs.File.stdout();
     const stdin = std.fs.File.stdin();
