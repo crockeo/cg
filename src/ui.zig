@@ -14,19 +14,6 @@ pub const FileItem = struct {
     status_name: []const u8,
 };
 
-fn change_type_name(change_type: git.Status.ChangeType) []const u8 {
-    return switch (change_type) {
-        .added => "added",
-        .copied => "copied",
-        .deleted => "deleted",
-        .file_type_change => "typechange",
-        .modified => "modified",
-        .renamed => "renamed",
-        .unmodified => "unmodified",
-        .updated_unmerged => "unmerged",
-    };
-}
-
 pub const Section = enum {
     head,
     untracked,
@@ -64,13 +51,13 @@ pub const RepoState = struct {
                     if (x_is_staged) {
                         try staged.append(allocator, .{
                             .path = changed.path,
-                            .status_name = change_type_name(changed.xy.x),
+                            .status_name = changed.xy.x.name(),
                         });
                     }
                     if (y_is_unstaged) {
                         try unstaged.append(allocator, .{
                             .path = changed.path,
-                            .status_name = change_type_name(changed.xy.y),
+                            .status_name = changed.xy.y.name(),
                         });
                     }
                 },
@@ -81,13 +68,13 @@ pub const RepoState = struct {
                     if (x_is_staged) {
                         try staged.append(allocator, .{
                             .path = copied_or_renamed.path,
-                            .status_name = change_type_name(copied_or_renamed.xy.x),
+                            .status_name = copied_or_renamed.xy.x.name(),
                         });
                     }
                     if (y_is_unstaged) {
                         try unstaged.append(allocator, .{
                             .path = copied_or_renamed.path,
-                            .status_name = change_type_name(copied_or_renamed.xy.y),
+                            .status_name = copied_or_renamed.xy.y.name(),
                         });
                     }
                 },

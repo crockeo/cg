@@ -61,6 +61,19 @@ pub const Status = struct {
                 else => error.InvalidChangeType,
             };
         }
+
+        pub fn name(self: ChangeType) []const u8 {
+            return switch (self) {
+                .added => "added",
+                .copied => "copied",
+                .deleted => "deleted",
+                .file_type_change => "typechange",
+                .modified => "modified",
+                .renamed => "renamed",
+                .unmodified => "unmodified",
+                .updated_unmerged => "unmerged",
+            };
+        }
     };
 
     const XY = struct {
