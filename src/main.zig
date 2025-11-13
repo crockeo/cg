@@ -5,6 +5,7 @@ const input = @import("input.zig");
 const queue = @import("queue.zig");
 const term = @import("term.zig");
 const ui = @import("ui.zig");
+const utils = @import("utils.zig");
 
 const CGError = error{
     OutOfMemory,
@@ -292,15 +293,47 @@ pub const BaseState = struct {
             return .{};
         }
 
-        const deltas = self.current_deltas() orelse return .{};
+        var repo_state = &(self.repo_state orelse return .{});
+        var deltas = self.current_deltas() orelse return .{};
+
         if (deltas.items.len == 0) {
             return .{};
         }
 
         const paths = try self.current_pos_paths(deltas);
-        if (self.user_state.pos == deltas.items.len) {
-            self.user_state.pos -= 1;
+        errdefer self.allocator.free(paths);
+
+        const compare_fn = struct {
+            fn cmp(_: void, a: ui.FileItem, b: ui.FileItem) std.math.Order {
+                return std.mem.order(u8, a.path, b.path);
+            }
+        }.cmp;
+
+        const new_status_name = blk: {
+            if (self.user_state.section == .untracked) {
+                break :blk git.Status.ChangeType.added.name();
+            }
+            // TODO: this isn't quite right. we could also be deleting a file
+            break :blk git.Status.ChangeType.modified.name();
+        };
+
+        if (self.user_state.pos == 0) {
+            for (deltas.items) |delta| {
+                var staged_delta = delta;
+                staged_delta.status_name = new_status_name;
+                try utils.insert_ordered(ui.FileItem, self.allocator, &repo_state.staged, staged_delta, {}, compare_fn);
+            }
+            deltas.clearRetainingCapacity();
+            self.user_state.pos = 0;
+        } else {
+            var delta = deltas.orderedRemove(self.user_state.pos - 1);
+            delta.status_name = new_status_name;
+            try utils.insert_ordered(ui.FileItem, self.allocator, &repo_state.staged, delta, {}, compare_fn);
+            if (self.user_state.pos > deltas.items.len) {
+                self.user_state.pos = deltas.items.len;
+            }
         }
+
         try self.job_queue.put(.{ .stage = paths });
 
         return .{};
@@ -353,7 +386,7 @@ pub const BaseState = struct {
     ////////////////////
     // Helper Methods //
     ////////////////////
-    fn current_deltas(self: *const Self) ?*const std.ArrayList(ui.FileItem) {
+    fn current_deltas(self: *Self) ?*std.ArrayList(ui.FileItem) {
         const repo_state = &(self.repo_state orelse return null);
         switch (self.user_state.section) {
             .untracked => return &repo_state.untracked,
