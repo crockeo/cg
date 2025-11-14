@@ -121,6 +121,7 @@ pub const BaseState = struct {
         try self.input_map.add(&[_]input.Input{.{ .key = .Down }}, Self.arrow_down_handler);
         try self.input_map.add(&[_]input.Input{.{ .key = .B }}, Self.branch_handler);
         try self.input_map.add(&[_]input.Input{ .{ .key = .C }, .{ .key = .C } }, Self.commit_handler);
+        try self.input_map.add(&[_]input.Input{.{ .key = .P }}, Self.push_handler);
         try self.input_map.add(&[_]input.Input{.{ .key = .S }}, Self.stage_handler);
         try self.input_map.add(&[_]input.Input{.{ .key = .Tab }}, Self.toggle_expand_handler);
         try self.input_map.add(&[_]input.Input{.{ .key = .U }}, Self.unstage_handler);
@@ -291,6 +292,17 @@ pub const BaseState = struct {
 
         git.commit(self.allocator) catch {};
         self.job_queue.put(.refresh) catch {};
+        return .stop;
+    }
+
+    fn push_handler(self: *Self) !State.Result {
+        // TODO: make it so we can push to other places.
+        try self.job_queue.put(.{
+            .push = .{
+                .branch = "main",
+                .remote = "origin",
+            },
+        });
         return .stop;
     }
 
