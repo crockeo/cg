@@ -25,6 +25,10 @@ pub fn get_window_size() !WindowSize {
     };
 }
 
+pub fn go_to_pos(writer: *std.io.Writer, row: usize, col: usize) !void {
+    try writer.print("\x1b[{};{}H", .{ row, col });
+}
+
 pub fn enter_raw_mode() !std.posix.termios {
     const stdout = std.fs.File.stdout();
     const stdin = std.fs.File.stdin();

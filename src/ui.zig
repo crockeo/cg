@@ -9,6 +9,56 @@ const term = @import("term.zig");
 // - When highlighting a line, make the background go to the end of the line.
 //   Don't just stop at the end of the text.
 
+const CORNER_TOP_LEFT = "╭";
+const CORNER_TOP_RIGHT = "╮";
+const CORNER_BOTTOM_LEFT = "╰";
+const CORNER_BOTTOM_RIGHT = "╯";
+const EDGE_HORIZONTAL = "─";
+const EDGE_VERTICAL = "│";
+
+pub fn paint_box(
+    writer: *std.io.Writer,
+    row: usize,
+    col: usize,
+    width: usize,
+    height: usize,
+) error{WriteFailed}!void {
+    for (row..row + height) |i| {
+        try term.go_to_pos(writer, i, col);
+
+        const start_str = blk: {
+            if (i == row) {
+                break :blk CORNER_TOP_LEFT;
+            }
+            if (i == row + height - 1) {
+                break :blk CORNER_BOTTOM_LEFT;
+            }
+            break :blk EDGE_VERTICAL;
+        };
+        const end_str = blk: {
+            if (i == row) {
+                break :blk CORNER_TOP_RIGHT;
+            }
+            if (i == row + height - 1) {
+                break :blk CORNER_BOTTOM_RIGHT;
+            }
+            break :blk EDGE_VERTICAL;
+        };
+        const fill_str = blk: {
+            if (i == row or i == row + height - 1) {
+                break :blk EDGE_HORIZONTAL;
+            }
+            break :blk " ";
+        };
+
+        try writer.writeAll(start_str);
+        for (0..width - 2) |_| {
+            try writer.writeAll(fill_str);
+        }
+        try writer.writeAll(end_str);
+    }
+}
+
 pub const FileItem = struct {
     path: []const u8,
     status_name: []const u8,

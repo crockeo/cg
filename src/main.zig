@@ -9,6 +9,7 @@ const utils = @import("utils.zig");
 
 const CGError = error{
     OutOfMemory,
+    WriteFailed,
 };
 
 const Event = union(enum) {
@@ -478,16 +479,23 @@ pub const InputState = struct {
 
         const center_row = ctx.term_height / 2;
         const prompt = "> ";
-        const total_length = prompt.len + self.contents.items.len;
+        const total_length = @max(50, prompt.len + self.contents.items.len);
         const center_col = if (ctx.term_width > total_length) (ctx.term_width - total_length) / 2 else 0;
 
         var buf: [256]u8 = undefined;
-        const cursor_pos = std.fmt.bufPrint(&buf, "\x1b[{d};{d}H", .{ center_row, center_col }) catch {
-            return error.OutOfMemory;
-        };
-        stdout.writeAll(cursor_pos) catch {};
-        stdout.writeAll(prompt) catch {};
-        stdout.writeAll(self.contents.items) catch {};
+        var writer = stdout.writer(&buf);
+
+        try ui.paint_box(
+            &writer.interface,
+            center_row - 1,
+            center_col - 2,
+            total_length + 4,
+            3,
+        );
+        try term.go_to_pos(&writer.interface, center_row, center_col);
+        try writer.interface.writeAll(prompt);
+        try writer.interface.writeAll(self.contents.items);
+        try writer.interface.flush();
     }
 
     pub fn handle(state: *State, ctx: State.HandleContext, event: Event) CGError!State.Result {
