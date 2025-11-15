@@ -487,6 +487,7 @@ pub const InputState = struct {
 
         try ui.paint_box(
             &writer.interface,
+            "Branch Name",
             center_row - 1,
             center_col - 2,
             total_length + 4,

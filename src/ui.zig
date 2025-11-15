@@ -18,6 +18,7 @@ const EDGE_VERTICAL = "│";
 
 pub fn paint_box(
     writer: *std.io.Writer,
+    title: ?[]const u8,
     row: usize,
     col: usize,
     width: usize,
@@ -52,8 +53,22 @@ pub fn paint_box(
         };
 
         try writer.writeAll(start_str);
-        for (0..width - 2) |_| {
+        if (i == row and title != null) {
             try writer.writeAll(fill_str);
+            try writer.writeAll(" ");
+            try writer.writeAll(title.?);
+            try writer.writeAll(" ");
+            // 5 here =
+            // - 2 for the start + end str
+            // - 1 for the preceding fill str
+            // - 2 for the spaces
+            for (0..width - 5 - title.?.len) |_| {
+                try writer.writeAll(fill_str);
+            }
+        } else {
+            for (0..width - 2) |_| {
+                try writer.writeAll(fill_str);
+            }
         }
         try writer.writeAll(end_str);
     }
