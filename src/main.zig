@@ -275,7 +275,21 @@ pub const BaseState = struct {
     }
 
     fn branch_handler(self: *Self) !State.Result {
-        const input_state = try InputState.init(self.allocator);
+        var refs = try git.branch(self.allocator);
+        defer {
+            for (refs.items) |ref| {
+                ref.deinit(self.allocator);
+            }
+            refs.deinit(self.allocator);
+        }
+
+        var options = try self.allocator.alloc([]const u8, refs.items.len);
+        for (0.., refs.items) |i, ref| {
+            options[i] = ref.refname;
+        }
+        defer self.allocator.free(options);
+
+        const input_state = try InputState.init(self.allocator, options);
         return .{ .push = input_state.as_state() };
     }
 
@@ -445,17 +459,23 @@ pub const InputState = struct {
 
     allocator: std.mem.Allocator,
     contents: std.ArrayList(u8),
-    refs: std.ArrayList(git.Ref),
+    options: []const []const u8,
 
-    pub fn init(allocator: std.mem.Allocator) err.Error!*Self {
+    pub fn init(allocator: std.mem.Allocator, options: []const []const u8) err.Error!*Self {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
 
-        const refs = try git.branch(allocator);
+        var options_dupe = try allocator.alloc([]const u8, options.len);
+        for (0.., options) |i, option| {
+            const dupe = try allocator.dupe(u8, option);
+            errdefer allocator.free(dupe);
+            options_dupe[i] = dupe;
+        }
+
         self.* = .{
             .allocator = allocator,
             .contents = .empty,
-            .refs = refs,
+            .options = options_dupe,
         };
         return self;
     }
@@ -470,12 +490,10 @@ pub const InputState = struct {
     pub fn deinit(state: *State) void {
         const self: *Self = @ptrCast(@alignCast(state.context));
         self.contents.deinit(self.allocator);
-        for (self.refs.items) |ref| {
-            self.allocator.free(ref.objectname);
-            self.allocator.free(ref.refname);
-            self.allocator.free(ref.upstream);
+        for (self.options) |option| {
+            self.allocator.free(option);
         }
-        self.refs.deinit(self.allocator);
+        self.allocator.free(self.options);
         self.allocator.destroy(self);
     }
 
@@ -779,10 +797,7 @@ pub fn main() !void {
         .{app},
     );
 
-    app.foreground_main() catch |e| {
-        term.restore(app.original_termios) catch {};
-        return e;
-    };
+    try app.foreground_main();
 }
 
 test "ref other tests" {

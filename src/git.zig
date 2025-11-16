@@ -3,9 +3,17 @@ const std = @import("std");
 const err = @import("err.zig");
 
 pub const Ref = struct {
+    const Self = @This();
+
     objectname: []const u8,
     refname: []const u8,
     upstream: []const u8,
+
+    pub fn deinit(self: Self, allocator: std.mem.Allocator) void {
+        allocator.free(self.objectname);
+        allocator.free(self.refname);
+        allocator.free(self.upstream);
+    }
 };
 
 pub fn branch(allocator: std.mem.Allocator) !std.ArrayList(Ref) {
@@ -20,7 +28,7 @@ pub fn branch(allocator: std.mem.Allocator) !std.ArrayList(Ref) {
     defer allocator.free(output);
 
     var refs = std.ArrayList(Ref).empty;
-    var lines = std.mem.splitScalar(u8, output, '\n');
+    var lines = std.mem.splitAny(u8, output, "\n\r");
     while (lines.next()) |line| {
         if (line.len == 0) {
             continue;
