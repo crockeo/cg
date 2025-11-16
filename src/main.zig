@@ -464,6 +464,7 @@ pub const InputState = struct {
     allocator: std.mem.Allocator,
     contents: std.ArrayList(u8),
     options: []const []const u8,
+    pos: usize,
 
     pub fn init(allocator: std.mem.Allocator, options: []const []const u8) err.Error!*Self {
         const self = try allocator.create(Self);
@@ -480,6 +481,7 @@ pub const InputState = struct {
             .allocator = allocator,
             .contents = .empty,
             .options = options_dupe,
+            .pos = 0,
         };
         return self;
     }
@@ -514,6 +516,8 @@ pub const InputState = struct {
         var buf: [256]u8 = undefined;
         var writer = stdout.writer(&buf);
 
+        // TODO: paint the current row with a dark background
+        // (like we do for the BaseState)
         try ui.paint_box(
             &writer.interface,
             "Branch",
@@ -538,18 +542,39 @@ pub const InputState = struct {
 
         switch (event) {
             .input => |input_evt| {
-                // Handle escape and enter
                 if (input_evt.eql(.{ .key = .Escape })) {
                     return .pop;
                 }
                 if (input_evt.eql(.{ .key = .Enter })) {
+                    // TODO: somehow call a callback
+                    // to give the current `contents` to something.
                     return .pop;
                 }
 
-                // Handle backspace
                 if (input_evt.eql(.{ .key = .Backspace })) {
                     if (self.contents.items.len > 0) {
                         _ = self.contents.pop();
+                    }
+                    return .stop;
+                }
+
+                if (input_evt.eql(.{ .key = .Up })) {
+                    if (self.pos > 0) {
+                        self.pos -= 1;
+                    }
+                    if (self.pos > 0) {
+                        try self.contents.resize(self.allocator, self.options[self.pos - 1].len);
+                        std.mem.copyForwards(u8, self.contents.items, self.options[self.pos - 1]);
+                    }
+                    return .stop;
+                }
+                if (input_evt.eql(.{ .key = .Down })) {
+                    if (self.pos < self.options.len) {
+                        self.pos += 1;
+                    }
+                    if (self.pos > 0) {
+                        try self.contents.resize(self.allocator, self.options[self.pos - 1].len);
+                        std.mem.copyForwards(u8, self.contents.items, self.options[self.pos - 1]);
                     }
                     return .stop;
                 }
@@ -598,10 +623,10 @@ pub const InputState = struct {
 
                 if (char) |c| {
                     try self.contents.append(self.allocator, c);
-                    return .stop;
+                    self.pos = 0;
                 }
 
-                return .pass;
+                return .stop;
             },
             .repo_state => {
                 return .pass;
