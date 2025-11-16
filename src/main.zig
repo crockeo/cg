@@ -285,7 +285,11 @@ pub const BaseState = struct {
 
         var options = try self.allocator.alloc([]const u8, refs.items.len);
         for (0.., refs.items) |i, ref| {
-            options[i] = ref.refname;
+            if (std.mem.startsWith(u8, ref.refname, "refs/heads/")) {
+                options[i] = ref.refname["refs/heads/".len..];
+            } else {
+                options[i] = ref.refname;
+            }
         }
         defer self.allocator.free(options);
 
@@ -501,9 +505,11 @@ pub const InputState = struct {
         const self: *const Self = @ptrCast(@alignCast(state.context));
         const stdout = std.fs.File.stdout();
 
-        const center_row = ctx.term_height / 2;
-        const total_length = @max(50, self.contents.items.len);
-        const center_col = if (ctx.term_width > total_length) (ctx.term_width - total_length) / 2 else 0;
+        const total_width = @max(50, self.contents.items.len);
+        const total_height = 1 + self.options.len;
+
+        const center_row = ctx.term_height / 2 - total_height / 2;
+        const center_col = if (ctx.term_width > total_width) (ctx.term_width - total_width) / 2 else 0;
 
         var buf: [256]u8 = undefined;
         var writer = stdout.writer(&buf);
@@ -513,12 +519,16 @@ pub const InputState = struct {
             "Branch",
             center_row - 1,
             center_col - 2,
-            total_length + 4,
-            3,
+            total_width + 4,
+            3 + self.options.len,
         );
         try term.go_to_pos(&writer.interface, center_row, center_col);
         try writer.interface.writeAll(self.contents.items);
         try writer.interface.writeAll("█");
+        for (1.., self.options) |i, option| {
+            try term.go_to_pos(&writer.interface, center_row + i, center_col);
+            try writer.interface.writeAll(option);
+        }
         try writer.interface.flush();
     }
 
