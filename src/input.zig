@@ -1,9 +1,11 @@
 const std = @import("std");
 
+const err = @import("err.zig");
+
 pub fn InputMap(comptime T: type, comptime R: type) type {
     return struct {
         const Self = @This();
-        const Handler = *const fn (T) error{OutOfMemory}!R;
+        const Handler = *const fn (T) err.Error!R;
 
         allocator: std.mem.Allocator,
         assoc: std.AutoHashMap(Input, *Self),

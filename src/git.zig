@@ -2,6 +2,50 @@ const std = @import("std");
 
 const err = @import("err.zig");
 
+pub const Ref = struct {
+    objectname: []const u8,
+    refname: []const u8,
+    upstream: []const u8,
+};
+
+pub fn branch(allocator: std.mem.Allocator) !std.ArrayList(Ref) {
+    var child = std.process.Child.init(
+        &[_][]const u8{ "git", "branch", "--format=%(objectname) %(refname) %(upstream)" },
+        allocator,
+    );
+    child.stdout_behavior = .Pipe;
+    try child.spawn();
+
+    const output = try child.stdout.?.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(output);
+
+    var refs = std.ArrayList(Ref).empty;
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) {
+            continue;
+        }
+
+        var segments = std.mem.splitScalar(u8, line, ' ');
+
+        const objectname = segments.next().?;
+        const refname = segments.next().?;
+        const upstream = segments.next().?;
+
+        try refs.append(
+            allocator,
+            .{
+                .objectname = try allocator.dupe(u8, objectname),
+                .refname = try allocator.dupe(u8, refname),
+                .upstream = try allocator.dupe(u8, upstream),
+            },
+        );
+    }
+
+    _ = try child.wait();
+    return refs;
+}
+
 pub fn commit(allocator: std.mem.Allocator) !void {
     var child = std.process.Child.init(
         &[_][]const u8{ "git", "commit" },
@@ -14,9 +58,9 @@ pub fn commit(allocator: std.mem.Allocator) !void {
     _ = try child.wait();
 }
 
-pub fn push(allocator: std.mem.Allocator, remote: []const u8, branch: []const u8) !void {
+pub fn push(allocator: std.mem.Allocator, remote: []const u8, branch_name: []const u8) !void {
     var child = std.process.Child.init(
-        &[_][]const u8{ "git", "push", remote, branch },
+        &[_][]const u8{ "git", "push", remote, branch_name },
         allocator,
     );
     try child.spawn();

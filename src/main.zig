@@ -1,16 +1,12 @@
 const std = @import("std");
 
+const err = @import("err.zig");
 const git = @import("git.zig");
 const input = @import("input.zig");
 const queue = @import("queue.zig");
 const term = @import("term.zig");
 const ui = @import("ui.zig");
 const utils = @import("utils.zig");
-
-const CGError = error{
-    OutOfMemory,
-    WriteFailed,
-};
 
 const Event = union(enum) {
     repo_state: ui.RepoState,
@@ -59,8 +55,8 @@ pub const State = struct {
 
     const VTable = struct {
         deinit: ?*const fn (self: *Self) void,
-        paint: *const fn (self: *const Self, PaintContext) CGError!void,
-        handle: *const fn (self: *Self, HandleContext, Event) CGError!Result,
+        paint: *const fn (self: *const Self, PaintContext) err.Error!void,
+        handle: *const fn (self: *Self, HandleContext, Event) err.Error!Result,
     };
 
     context: *anyopaque,
@@ -72,11 +68,11 @@ pub const State = struct {
         }
     }
 
-    pub fn handle(self: *Self, ctx: HandleContext, event: Event) CGError!Result {
+    pub fn handle(self: *Self, ctx: HandleContext, event: Event) err.Error!Result {
         return try self.vtable.handle(self, ctx, event);
     }
 
-    pub fn paint(self: *const Self, ctx: PaintContext) CGError!void {
+    pub fn paint(self: *const Self, ctx: PaintContext) err.Error!void {
         try self.vtable.paint(self, ctx);
     }
 };
@@ -147,7 +143,7 @@ pub const BaseState = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn paint(state: *const State, ctx: State.PaintContext) CGError!void {
+    pub fn paint(state: *const State, ctx: State.PaintContext) err.Error!void {
         _ = ctx;
         const self: *const Self = @ptrCast(@alignCast(state.context));
         const stdout = std.fs.File.stdout();
@@ -156,7 +152,7 @@ pub const BaseState = struct {
         }
     }
 
-    pub fn handle(state: *State, _: State.HandleContext, event: Event) CGError!State.Result {
+    pub fn handle(state: *State, _: State.HandleContext, event: Event) err.Error!State.Result {
         const self: *Self = @ptrCast(@alignCast(state.context));
 
         switch (event) {
@@ -449,13 +445,17 @@ pub const InputState = struct {
 
     allocator: std.mem.Allocator,
     contents: std.ArrayList(u8),
+    refs: std.ArrayList(git.Ref),
 
-    pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!*Self {
+    pub fn init(allocator: std.mem.Allocator) err.Error!*Self {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
+
+        const refs = try git.branch(allocator);
         self.* = .{
             .allocator = allocator,
             .contents = .empty,
+            .refs = refs,
         };
         return self;
     }
@@ -470,10 +470,16 @@ pub const InputState = struct {
     pub fn deinit(state: *State) void {
         const self: *Self = @ptrCast(@alignCast(state.context));
         self.contents.deinit(self.allocator);
+        for (self.refs.items) |ref| {
+            self.allocator.free(ref.objectname);
+            self.allocator.free(ref.refname);
+            self.allocator.free(ref.upstream);
+        }
+        self.refs.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
-    pub fn paint(state: *const State, ctx: State.PaintContext) CGError!void {
+    pub fn paint(state: *const State, ctx: State.PaintContext) err.Error!void {
         const self: *const Self = @ptrCast(@alignCast(state.context));
         const stdout = std.fs.File.stdout();
 
@@ -498,7 +504,7 @@ pub const InputState = struct {
         try writer.interface.flush();
     }
 
-    pub fn handle(state: *State, ctx: State.HandleContext, event: Event) CGError!State.Result {
+    pub fn handle(state: *State, ctx: State.HandleContext, event: Event) err.Error!State.Result {
         const self: *Self = @ptrCast(@alignCast(state.context));
         _ = ctx;
 
@@ -773,7 +779,10 @@ pub fn main() !void {
         .{app},
     );
 
-    try app.foreground_main();
+    app.foreground_main() catch |e| {
+        term.restore(app.original_termios) catch {};
+        return e;
+    };
 }
 
 test "ref other tests" {
