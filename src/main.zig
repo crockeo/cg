@@ -533,13 +533,29 @@ pub const InputState = struct {
             3 + options.len,
         );
         try term.go_to_pos(&writer.interface, center_row, center_col);
-        try writer.interface.writeAll(self.contents.items);
-        try writer.interface.writeAll("█");
+
+        const pretty = ui.Pretty{ .writer = &writer.interface };
+
+        {
+            const style = Self.row_style(self.pos, 0);
+            try pretty.printStyled("{s}", style, .{self.contents.items});
+            if (self.pos == 0) {
+                try pretty.printStyled("█", style, .{});
+            }
+        }
         for (1.., options) |i, option| {
+            const style = Self.row_style(self.pos, i);
             try term.go_to_pos(&writer.interface, center_row + i, center_col);
-            try writer.interface.writeAll(option);
+            try pretty.printStyled("{s}", style, .{option});
         }
         try writer.interface.flush();
+    }
+
+    fn row_style(pos: usize, row: usize) ui.Style {
+        if (pos == row) {
+            return .highlighted;
+        }
+        return .default;
     }
 
     pub fn handle(state: *State, ctx: State.HandleContext, event: Event) err.Error!State.Result {
@@ -561,6 +577,7 @@ pub const InputState = struct {
                     if (self.contents.items.len > 0) {
                         _ = self.contents.pop();
                     }
+                    try self.filter_and_sort();
                     return .stop;
                 }
 
@@ -583,9 +600,7 @@ pub const InputState = struct {
                     return .stop;
                 }
                 if (input_evt.eql(.{ .key = .Down })) {
-                    if (self.pos < options.len) {
-                        self.pos += 1;
-                    }
+                    self.pos = @min(options.len - 1, self.pos + 1);
                     if (self.pos > 0) {
                         try self.contents.resize(
                             self.allocator,

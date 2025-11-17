@@ -336,7 +336,7 @@ fn prefix(expanded: bool) []const u8 {
     return ">";
 }
 
-const Pretty = struct {
+pub const Pretty = struct {
     const Self = @This();
 
     writer: *std.io.Writer,
@@ -362,11 +362,11 @@ const Pretty = struct {
     }
 };
 
-const Style = struct {
+pub const Style = struct {
     const Self = @This();
 
-    const default = Self{};
-    const highlighted = Self{ .background = .mantle };
+    pub const default = Self{};
+    pub const highlighted = Self{ .background = .mantle };
 
     background: ?Color = null,
     foreground: ?Color = null,
@@ -401,7 +401,7 @@ const Style = struct {
     }
 };
 
-const Color = struct {
+pub const Color = struct {
     const Self = @This();
 
     r: u8,
