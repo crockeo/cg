@@ -139,6 +139,8 @@ pub const Input = struct {
                 'A'...'Z' => @as(Key, @enumFromInt(@intFromEnum(Key.A) + (byte - 'A'))),
                 '0'...'9' => @as(Key, @enumFromInt(@intFromEnum(Key.Zero) + (byte - '0'))),
                 ' ' => Key.Space,
+                '-' => Key.Dash,
+                '/' => Key.Slash,
                 else => Key.Unknown,
             };
             const shift = switch (byte) {
@@ -195,6 +197,10 @@ pub const Key = enum {
     Seven,
     Eight,
     Nine,
+
+    // Characters
+    Dash,
+    Slash,
 
     // Control keys
     Space,

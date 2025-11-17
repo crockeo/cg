@@ -536,17 +536,14 @@ pub const InputState = struct {
         );
         try term.go_to_pos(&writer.interface, center_row, center_col);
 
-        const pretty = ui.Pretty{ .writer = &writer.interface };
-
-        {
-            const style = Self.row_style(self.pos, 0);
-            try pretty.printStyled("{s}", style, .{self.contents.items});
-            if (self.pos == 0) {
-                try pretty.printStyled("█", style, .{});
-            }
+        try writer.interface.writeAll(self.contents.items);
+        if (self.pos == 0) {
+            try writer.interface.writeAll("█");
         }
+
+        const pretty = ui.Pretty{ .writer = &writer.interface };
         for (1.., options) |i, option| {
-            const style = Self.row_style(self.pos, i);
+            const style: ui.Style = if (i == self.pos) .highlighted else .default;
             try term.go_to_pos(&writer.interface, center_row + i, center_col);
             try pretty.printStyled("{s}", style, .{option});
         }
@@ -645,6 +642,8 @@ pub const InputState = struct {
                     .X => if (input_evt.modifiers.shift) 'X' else 'x',
                     .Y => if (input_evt.modifiers.shift) 'Y' else 'y',
                     .Z => if (input_evt.modifiers.shift) 'Z' else 'z',
+                    .Slash => '/',
+                    .Dash => '-',
                     .Zero => '0',
                     .One => '1',
                     .Two => '2',
