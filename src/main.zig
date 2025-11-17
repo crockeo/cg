@@ -3,6 +3,7 @@ const std = @import("std");
 const err = @import("err.zig");
 const git = @import("git.zig");
 const input = @import("input.zig");
+const match = @import("match.zig");
 const queue = @import("queue.zig");
 const term = @import("term.zig");
 const ui = @import("ui.zig");
@@ -463,7 +464,8 @@ pub const InputState = struct {
 
     allocator: std.mem.Allocator,
     contents: std.ArrayList(u8),
-    options: []const []const u8,
+    options: [][]const u8,
+    options_filtered_sorted: std.ArrayList([]const u8),
     pos: usize,
 
     pub fn init(allocator: std.mem.Allocator, options: []const []const u8) err.Error!*Self {
@@ -481,6 +483,7 @@ pub const InputState = struct {
             .allocator = allocator,
             .contents = .empty,
             .options = options_dupe,
+            .options_filtered_sorted = .empty,
             .pos = 0,
         };
         return self;
@@ -500,6 +503,7 @@ pub const InputState = struct {
             self.allocator.free(option);
         }
         self.allocator.free(self.options);
+        self.options_filtered_sorted.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -507,8 +511,10 @@ pub const InputState = struct {
         const self: *const Self = @ptrCast(@alignCast(state.context));
         const stdout = std.fs.File.stdout();
 
+        const options = self.curr_options();
+
         const total_width = @max(50, self.contents.items.len);
-        const total_height = 1 + self.options.len;
+        const total_height = 1 + options.len;
 
         const center_row = ctx.term_height / 2 - total_height / 2;
         const center_col = if (ctx.term_width > total_width) (ctx.term_width - total_width) / 2 else 0;
@@ -524,12 +530,12 @@ pub const InputState = struct {
             center_row - 1,
             center_col - 2,
             total_width + 4,
-            3 + self.options.len,
+            3 + options.len,
         );
         try term.go_to_pos(&writer.interface, center_row, center_col);
         try writer.interface.writeAll(self.contents.items);
         try writer.interface.writeAll("█");
-        for (1.., self.options) |i, option| {
+        for (1.., options) |i, option| {
             try term.go_to_pos(&writer.interface, center_row + i, center_col);
             try writer.interface.writeAll(option);
         }
@@ -558,23 +564,38 @@ pub const InputState = struct {
                     return .stop;
                 }
 
+                const options = self.curr_options();
                 if (input_evt.eql(.{ .key = .Up })) {
                     if (self.pos > 0) {
                         self.pos -= 1;
                     }
                     if (self.pos > 0) {
-                        try self.contents.resize(self.allocator, self.options[self.pos - 1].len);
-                        std.mem.copyForwards(u8, self.contents.items, self.options[self.pos - 1]);
+                        try self.contents.resize(
+                            self.allocator,
+                            options[self.pos - 1].len,
+                        );
+                        std.mem.copyForwards(
+                            u8,
+                            self.contents.items,
+                            options[self.pos - 1],
+                        );
                     }
                     return .stop;
                 }
                 if (input_evt.eql(.{ .key = .Down })) {
-                    if (self.pos < self.options.len) {
+                    if (self.pos < options.len) {
                         self.pos += 1;
                     }
                     if (self.pos > 0) {
-                        try self.contents.resize(self.allocator, self.options[self.pos - 1].len);
-                        std.mem.copyForwards(u8, self.contents.items, self.options[self.pos - 1]);
+                        try self.contents.resize(
+                            self.allocator,
+                            options[self.pos - 1].len,
+                        );
+                        std.mem.copyForwards(
+                            u8,
+                            self.contents.items,
+                            options[self.pos - 1],
+                        );
                     }
                     return .stop;
                 }
@@ -623,6 +644,7 @@ pub const InputState = struct {
 
                 if (char) |c| {
                     try self.contents.append(self.allocator, c);
+                    try self.filter_and_sort();
                     self.pos = 0;
                 }
 
@@ -632,6 +654,29 @@ pub const InputState = struct {
                 return .pass;
             },
         }
+    }
+
+    fn curr_options(self: *const Self) []const []const u8 {
+        if (self.contents.items.len > 0) {
+            return self.options_filtered_sorted.items;
+        }
+        return self.options;
+    }
+
+    fn filter_and_sort(self: *Self) !void {
+        try self.options_filtered_sorted.resize(self.allocator, 0);
+        for (self.options) |option| {
+            if (match.matches(option, self.contents.items)) {
+                try self.options_filtered_sorted.append(self.allocator, option);
+            }
+        }
+
+        var scores = try self.allocator.alloc(usize, self.options_filtered_sorted.items.len);
+        defer self.allocator.free(scores);
+        for (0.., self.options_filtered_sorted.items) |i, option| {
+            scores[i] = try match.score(self.allocator, option, self.contents.items);
+        }
+        try match.sort_by_scores(self.allocator, self.options_filtered_sorted.items, scores);
     }
 };
 
@@ -836,6 +881,7 @@ pub fn main() !void {
 }
 
 test "ref other tests" {
+    _ = @import("match.zig");
     _ = @import("utils.zig");
     std.testing.refAllDecls(@This());
 }
