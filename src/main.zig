@@ -465,7 +465,7 @@ pub const InputState = struct {
     allocator: std.mem.Allocator,
     contents: std.ArrayList(u8),
     options: [][]const u8,
-    options_filtered_sorted: std.ArrayList([]const u8),
+    options_filtered_sorted: ?std.ArrayList([]const u8),
     pos: usize,
 
     pub fn init(allocator: std.mem.Allocator, options: []const []const u8) err.Error!*Self {
@@ -483,7 +483,7 @@ pub const InputState = struct {
             .allocator = allocator,
             .contents = .empty,
             .options = options_dupe,
-            .options_filtered_sorted = .empty,
+            .options_filtered_sorted = null,
             .pos = 0,
         };
         return self;
@@ -503,7 +503,9 @@ pub const InputState = struct {
             self.allocator.free(option);
         }
         self.allocator.free(self.options);
-        self.options_filtered_sorted.deinit(self.allocator);
+        if (self.options_filtered_sorted) |*options_filtered_sorted| {
+            options_filtered_sorted.deinit(self.allocator);
+        }
         self.allocator.destroy(self);
     }
 
@@ -600,7 +602,7 @@ pub const InputState = struct {
                     return .stop;
                 }
                 if (input_evt.eql(.{ .key = .Down })) {
-                    self.pos = @min(options.len - 1, self.pos + 1);
+                    self.pos = @min(options.len, self.pos + 1);
                     if (self.pos > 0) {
                         try self.contents.resize(
                             self.allocator,
@@ -672,26 +674,31 @@ pub const InputState = struct {
     }
 
     fn curr_options(self: *const Self) []const []const u8 {
-        if (self.contents.items.len > 0) {
-            return self.options_filtered_sorted.items;
+        if (self.options_filtered_sorted) |options_filtered_sorted| {
+            return options_filtered_sorted.items;
         }
         return self.options;
     }
 
     fn filter_and_sort(self: *Self) !void {
-        try self.options_filtered_sorted.resize(self.allocator, 0);
+        if (self.options_filtered_sorted == null) {
+            self.options_filtered_sorted = .empty;
+        }
+        var options_filtered_sorted = &self.options_filtered_sorted.?;
+
+        try options_filtered_sorted.resize(self.allocator, 0);
         for (self.options) |option| {
             if (match.matches(option, self.contents.items)) {
-                try self.options_filtered_sorted.append(self.allocator, option);
+                try options_filtered_sorted.append(self.allocator, option);
             }
         }
 
-        var scores = try self.allocator.alloc(usize, self.options_filtered_sorted.items.len);
+        var scores = try self.allocator.alloc(usize, options_filtered_sorted.items.len);
         defer self.allocator.free(scores);
-        for (0.., self.options_filtered_sorted.items) |i, option| {
+        for (0.., options_filtered_sorted.items) |i, option| {
             scores[i] = try match.score(self.allocator, option, self.contents.items);
         }
-        try match.sort_by_scores(self.allocator, self.options_filtered_sorted.items, scores);
+        try match.sort_by_scores(self.allocator, options_filtered_sorted.items, scores);
     }
 };
 
