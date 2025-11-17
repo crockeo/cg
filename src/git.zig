@@ -2,23 +2,70 @@ const std = @import("std");
 
 const err = @import("err.zig");
 
+/// State represents the unified state of the Git repo.
+pub const State = struct {
+    const Self = @This();
+
+    allocator: std.mem.Allocator,
+    branch_refs: std.ArrayList(Ref),
+    status: *Status,
+
+    pub fn build(allocator: std.mem.Allocator) !*Self {
+        const self = try allocator.create(Self);
+        errdefer allocator.destroy(self);
+
+        var branch_refs = try branch(allocator);
+        errdefer {
+            for (branch_refs.items) |branch_ref| {
+                branch_ref.deinit(allocator);
+            }
+            branch_refs.deinit(allocator);
+        }
+
+        const git_status = status(allocator);
+        errdefer git_status.deinit();
+        self.* = .{
+            .allocator = allocator,
+            .branch_refs = branch_refs,
+            .status = git_status,
+        };
+        return self;
+    }
+
+    pub fn deinit(self: *Self) void {
+        for (self.branch_refs.items) |branch_ref| {
+            branch_ref.deinit(self.allocator);
+        }
+        self.branch_refs.deinit(self.allocator);
+        self.status.deinit();
+        self.allocator.destroy(self);
+    }
+};
+
 pub const Ref = struct {
     const Self = @This();
 
+    is_head: bool,
     objectname: []const u8,
     refname: []const u8,
+    subject: []const u8,
     upstream: []const u8,
 
     pub fn deinit(self: Self, allocator: std.mem.Allocator) void {
         allocator.free(self.objectname);
         allocator.free(self.refname);
+        allocator.free(self.subject);
         allocator.free(self.upstream);
     }
 };
 
 pub fn branch(allocator: std.mem.Allocator) !std.ArrayList(Ref) {
     var child = std.process.Child.init(
-        &[_][]const u8{ "git", "branch", "--format=%(objectname) %(refname) %(upstream)" },
+        &[_][]const u8{
+            "git",
+            "branch",
+            "--format=%(if)%(HEAD)%(then)+%(else)-%(end) %(objectname) %(refname) %(contents:subject) %(upstream)",
+        },
         allocator,
     );
     child.stdout_behavior = .Pipe;
@@ -36,15 +83,19 @@ pub fn branch(allocator: std.mem.Allocator) !std.ArrayList(Ref) {
 
         var segments = std.mem.splitScalar(u8, line, ' ');
 
+        const head_marker = segments.next().?;
         const objectname = segments.next().?;
         const refname = segments.next().?;
+        const subject = segments.next().?;
         const upstream = segments.next().?;
 
         try refs.append(
             allocator,
             .{
+                .is_head = head_marker[0] == '+',
                 .objectname = try allocator.dupe(u8, objectname),
                 .refname = try allocator.dupe(u8, refname),
+                .subject = try allocator.dupe(u8, subject),
                 .upstream = try allocator.dupe(u8, upstream),
             },
         );
