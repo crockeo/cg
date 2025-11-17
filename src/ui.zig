@@ -74,105 +74,11 @@ pub fn paint_box(
     }
 }
 
-pub const FileItem = struct {
-    path: []const u8,
-    status_name: []const u8,
-};
-
 pub const Section = enum {
     head,
     untracked,
     unstaged,
     staged,
-};
-
-pub const RepoState = struct {
-    const Self = @This();
-
-    git_status: *git.Status,
-    staged: std.ArrayList(FileItem),
-    unstaged: std.ArrayList(FileItem),
-    untracked: std.ArrayList(FileItem),
-
-    pub fn init(allocator: std.mem.Allocator) !Self {
-        const git_status = try git.status(allocator);
-        errdefer git_status.deinit();
-
-        var staged = std.ArrayList(FileItem).empty;
-        errdefer staged.deinit(allocator);
-
-        var unstaged = std.ArrayList(FileItem).empty;
-        errdefer unstaged.deinit(allocator);
-
-        var untracked = std.ArrayList(FileItem).empty;
-        errdefer untracked.deinit(allocator);
-
-        for (git_status.files) |file| {
-            switch (file) {
-                .changed => |changed| {
-                    const x_is_staged = changed.xy.x != .unmodified;
-                    const y_is_unstaged = changed.xy.y != .unmodified;
-
-                    if (x_is_staged) {
-                        try staged.append(allocator, .{
-                            .path = changed.path,
-                            .status_name = changed.xy.x.name(),
-                        });
-                    }
-                    if (y_is_unstaged) {
-                        try unstaged.append(allocator, .{
-                            .path = changed.path,
-                            .status_name = changed.xy.y.name(),
-                        });
-                    }
-                },
-                .copied_or_renamed => |copied_or_renamed| {
-                    const x_is_staged = copied_or_renamed.xy.x != .unmodified;
-                    const y_is_unstaged = copied_or_renamed.xy.y != .unmodified;
-
-                    if (x_is_staged) {
-                        try staged.append(allocator, .{
-                            .path = copied_or_renamed.path,
-                            .status_name = copied_or_renamed.xy.x.name(),
-                        });
-                    }
-                    if (y_is_unstaged) {
-                        try unstaged.append(allocator, .{
-                            .path = copied_or_renamed.path,
-                            .status_name = copied_or_renamed.xy.y.name(),
-                        });
-                    }
-                },
-                .unmerged => |unmerged| {
-                    try unstaged.append(allocator, .{
-                        .path = unmerged.path,
-                        .status_name = "unmerged",
-                    });
-                },
-                .untracked_file => |untracked_file| {
-                    try untracked.append(allocator, .{
-                        .path = untracked_file.path,
-                        .status_name = "untracked",
-                    });
-                },
-                .ignored_file => {},
-            }
-        }
-
-        return .{
-            .git_status = git_status,
-            .staged = staged,
-            .unstaged = unstaged,
-            .untracked = untracked,
-        };
-    }
-
-    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-        self.git_status.deinit();
-        self.staged.deinit(allocator);
-        self.unstaged.deinit(allocator);
-        self.untracked.deinit(allocator);
-    }
 };
 
 pub const UserState = struct {
@@ -204,9 +110,8 @@ pub const UserState = struct {
 };
 
 pub fn paint(
-    allocator: std.mem.Allocator,
     user_state: *const UserState,
-    repo_state: *const RepoState,
+    repo_state: *const git.State,
     stdout: std.fs.File,
 ) !void {
     var stdout_buf: [1024]u8 = undefined;
@@ -218,7 +123,7 @@ pub fn paint(
     // Clear screen and move cursor to home
     try writer.writeAll("\x1b[2J\x1b[H");
 
-    try paint_refs(allocator, user_state, repo_state, pretty);
+    try paint_refs(user_state, repo_state, pretty);
     try paint_delta(user_state, pretty, "Untracked files", repo_state.untracked, .untracked);
     try paint_delta(user_state, pretty, "Unstaged files", repo_state.unstaged, .unstaged);
     try paint_delta(user_state, pretty, "Staged files", repo_state.staged, .staged);
@@ -229,9 +134,8 @@ pub fn paint(
 }
 
 fn paint_refs(
-    allocator: std.mem.Allocator,
     user_state: *const UserState,
-    repo_state: *const RepoState,
+    repo_state: *const git.State,
     pretty: Pretty,
 ) !void {
     const branch_head = repo_state.git_status.branch_head orelse "(detached)";
@@ -239,23 +143,17 @@ fn paint_refs(
     const base_style = highlight_style(user_state, .head, 0);
     try pretty.printStyled("  Head: ", base_style, .{});
 
-    // Get commit SHA and title from git log
-    var child = std.process.Child.init(
-        &[_][]const u8{ "git", "log", "-1", "--format=%h %s" },
-        allocator,
-    );
-    child.stdout_behavior = .Pipe;
-    try child.spawn();
+    const head_ref = blk: {
+        for (repo_state.branch_refs.items) |ref| {
+            if (ref.is_head) {
+                break :blk ref;
+            }
+        }
+        return;
+    };
 
-    const stdout = child.stdout orelse return error.NoStdout;
-    var buf: [1024]u8 = undefined;
-    const len = try stdout.read(&buf);
-    _ = try child.wait();
-
-    const output = std.mem.trim(u8, buf[0..len], &std.ascii.whitespace);
-    var it = std.mem.splitScalar(u8, output, ' ');
-    const sha = it.next() orelse "";
-    const title = it.rest();
+    const sha = head_ref.objectname[0..8];
+    const title = head_ref.subject;
 
     try pretty.printStyled(
         "{s} ",
@@ -286,7 +184,7 @@ fn paint_delta(
     user_state: *const UserState,
     pretty: Pretty,
     header: []const u8,
-    items: std.ArrayList(FileItem),
+    items: std.ArrayList(git.FileItem),
     section: Section,
 ) !void {
     const expanded = switch (section) {

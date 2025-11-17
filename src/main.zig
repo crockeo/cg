@@ -10,7 +10,7 @@ const ui = @import("ui.zig");
 const utils = @import("utils.zig");
 
 const Event = union(enum) {
-    repo_state: ui.RepoState,
+    git_state: *git.State,
     input: input.Input,
 };
 
@@ -92,10 +92,10 @@ pub const BaseState = struct {
 
     allocator: std.mem.Allocator,
     curr_input_map: *input.InputMap(*Self, State.Result),
+    git_state: ?*git.State,
     input_map: *input.InputMap(*Self, State.Result),
     job_queue: *queue.Queue(Job),
     original_termios: std.posix.termios,
-    repo_state: ?ui.RepoState,
     user_state: ui.UserState,
 
     pub fn init(allocator: std.mem.Allocator, job_queue: *queue.Queue(Job), original_termios: std.posix.termios) error{OutOfMemory}!*Self {
@@ -107,11 +107,11 @@ pub const BaseState = struct {
 
         self.* = .{
             .allocator = allocator,
-            .input_map = input_map,
             .curr_input_map = input_map,
+            .git_state = null,
+            .input_map = input_map,
             .job_queue = job_queue,
             .original_termios = original_termios,
-            .repo_state = null,
             .user_state = ui.UserState.init(allocator),
         };
 
@@ -137,8 +137,8 @@ pub const BaseState = struct {
     pub fn deinit(state: *State) void {
         const self: *Self = @ptrCast(@alignCast(state.context));
         self.input_map.deinit();
-        if (self.repo_state) |*repo_state| {
-            repo_state.deinit(self.allocator);
+        if (self.git_state) |git_state| {
+            git_state.deinit();
         }
         self.user_state.deinit();
         self.allocator.destroy(self);
@@ -148,8 +148,8 @@ pub const BaseState = struct {
         _ = ctx;
         const self: *const Self = @ptrCast(@alignCast(state.context));
         const stdout = std.fs.File.stdout();
-        if (self.repo_state) |*repo_state| {
-            ui.paint(self.allocator, &self.user_state, repo_state, stdout) catch {};
+        if (self.git_state) |git_state| {
+            ui.paint(&self.user_state, git_state, stdout) catch {};
         }
     }
 
@@ -179,12 +179,12 @@ pub const BaseState = struct {
 
                 return .stop;
             },
-            .repo_state => |new_repo_state| {
-                if (self.repo_state) |*repo_state| {
-                    repo_state.deinit(self.allocator);
+            .git_state => |new_git_state| {
+                if (self.git_state) |git_state| {
+                    git_state.deinit();
                 }
                 // TODO: reconcile this with user state
-                self.repo_state = new_repo_state;
+                self.git_state = new_git_state;
                 return .stop;
             },
         }
@@ -194,7 +194,7 @@ pub const BaseState = struct {
     // Input Handlers //
     ////////////////////
     fn arrow_up_handler(self: *Self) !State.Result {
-        const repo_state = &(self.repo_state orelse return .stop);
+        const git_state = self.git_state orelse return .stop;
         switch (self.user_state.section) {
             .head => {
                 // Intentionally ignored, since there's nothing above here.
@@ -210,7 +210,7 @@ pub const BaseState = struct {
             .unstaged => {
                 if (!self.user_state.unstaged_expanded or self.user_state.pos == 0) {
                     if (self.user_state.untracked_expanded) {
-                        self.user_state.pos = repo_state.untracked.items.len;
+                        self.user_state.pos = git_state.untracked.items.len;
                     } else {
                         self.user_state.pos = 0;
                     }
@@ -222,7 +222,7 @@ pub const BaseState = struct {
             .staged => {
                 if (!self.user_state.staged_expanded or self.user_state.pos == 0) {
                     if (self.user_state.unstaged_expanded) {
-                        self.user_state.pos = repo_state.unstaged.items.len;
+                        self.user_state.pos = git_state.unstaged.items.len;
                     } else {
                         self.user_state.pos = 0;
                     }
@@ -236,7 +236,7 @@ pub const BaseState = struct {
     }
 
     fn arrow_down_handler(self: *Self) !State.Result {
-        const repo_state = self.repo_state orelse return .stop;
+        const git_state = self.git_state orelse return .stop;
         switch (self.user_state.section) {
             .head => {
                 self.user_state.pos = 0;
@@ -244,7 +244,7 @@ pub const BaseState = struct {
             },
             .untracked => {
                 if (!self.user_state.untracked_expanded or
-                    self.user_state.pos == repo_state.untracked.items.len)
+                    self.user_state.pos == git_state.untracked.items.len)
                 {
                     self.user_state.pos = 0;
                     self.user_state.section = .unstaged;
@@ -254,7 +254,7 @@ pub const BaseState = struct {
             },
             .unstaged => {
                 if (!self.user_state.unstaged_expanded or
-                    self.user_state.pos == repo_state.unstaged.items.len)
+                    self.user_state.pos == git_state.unstaged.items.len)
                 {
                     self.user_state.pos = 0;
                     self.user_state.section = .staged;
@@ -264,7 +264,7 @@ pub const BaseState = struct {
             },
             .staged => {
                 if (!self.user_state.staged_expanded or
-                    self.user_state.pos >= repo_state.staged.items.len)
+                    self.user_state.pos >= git_state.staged.items.len)
                 {
                     // Intentionally ignored, since there's nothing past here.
                 } else {
@@ -327,7 +327,7 @@ pub const BaseState = struct {
             return .stop;
         }
 
-        var repo_state = &(self.repo_state orelse return .stop);
+        var git_state = self.git_state orelse return .stop;
         var deltas = self.current_deltas() orelse return .stop;
 
         if (deltas.items.len == 0) {
@@ -338,7 +338,7 @@ pub const BaseState = struct {
         errdefer self.allocator.free(paths);
 
         const compare_fn = struct {
-            fn cmp(_: void, a: ui.FileItem, b: ui.FileItem) std.math.Order {
+            fn cmp(_: void, a: git.FileItem, b: git.FileItem) std.math.Order {
                 return std.mem.order(u8, a.path, b.path);
             }
         }.cmp;
@@ -355,14 +355,14 @@ pub const BaseState = struct {
             for (deltas.items) |delta| {
                 var staged_delta = delta;
                 staged_delta.status_name = new_status_name;
-                try utils.insert_ordered(ui.FileItem, self.allocator, &repo_state.staged, staged_delta, {}, compare_fn);
+                try utils.insert_ordered(git.FileItem, self.allocator, &git_state.staged, staged_delta, {}, compare_fn);
             }
             deltas.clearRetainingCapacity();
             self.user_state.pos = 0;
         } else {
             var delta = deltas.orderedRemove(self.user_state.pos - 1);
             delta.status_name = new_status_name;
-            try utils.insert_ordered(ui.FileItem, self.allocator, &repo_state.staged, delta, {}, compare_fn);
+            try utils.insert_ordered(git.FileItem, self.allocator, &git_state.staged, delta, {}, compare_fn);
             if (self.user_state.pos > deltas.items.len) {
                 self.user_state.pos = deltas.items.len;
             }
@@ -419,19 +419,19 @@ pub const BaseState = struct {
     ////////////////////
     // Helper Methods //
     ////////////////////
-    fn current_deltas(self: *Self) ?*std.ArrayList(ui.FileItem) {
-        const repo_state = &(self.repo_state orelse return null);
+    fn current_deltas(self: *Self) ?*std.ArrayList(git.FileItem) {
+        const git_state = self.git_state orelse return null;
         switch (self.user_state.section) {
-            .untracked => return &repo_state.untracked,
-            .unstaged => return &repo_state.unstaged,
-            .staged => return &repo_state.staged,
+            .untracked => return &git_state.untracked,
+            .unstaged => return &git_state.unstaged,
+            .staged => return &git_state.staged,
             else => return null,
         }
     }
 
     fn current_pos_paths(
         self: *const Self,
-        deltas: *const std.ArrayList(ui.FileItem),
+        deltas: *const std.ArrayList(git.FileItem),
     ) ![]const []const u8 {
         if (self.user_state.pos == 0) {
             var paths = try self.allocator.alloc([]const u8, deltas.items.len);
@@ -666,7 +666,7 @@ pub const InputState = struct {
 
                 return .stop;
             },
-            .repo_state => {
+            .git_state => {
                 return .pass;
             },
         }
@@ -827,12 +827,12 @@ const App = struct {
     /// in cases where the user makes no inputs.
     fn refresh_thread_main(self: *Self) void {
         while (true) {
-            const repo_state = ui.RepoState.init(self.allocator) catch {
+            const git_state = git.State.build(self.allocator) catch {
                 @panic("refresh_thread_main failed to get new status");
             };
-            errdefer repo_state.deinit();
+            errdefer git_state.deinit();
 
-            self.event_queue.put(.{ .repo_state = repo_state }) catch {
+            self.event_queue.put(.{ .git_state = git_state }) catch {
                 @panic("refresh_thread_main OOM");
             };
             std.Thread.sleep(std.time.ns_per_s * 5);
@@ -871,12 +871,12 @@ const App = struct {
             }
 
             // Trigger a git status refresh after completing the job
-            const repo_state = ui.RepoState.init(self.allocator) catch {
+            const git_state = git.State.build(self.allocator) catch {
                 @panic("job_thread_main failed to get new status");
             };
-            errdefer repo_state.deinit();
+            errdefer git_state.deinit();
 
-            self.event_queue.put(.{ .repo_state = repo_state }) catch {
+            self.event_queue.put(.{ .git_state = git_state }) catch {
                 @panic("job_thread_main OOM");
             };
         }

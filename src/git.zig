@@ -2,13 +2,21 @@ const std = @import("std");
 
 const err = @import("err.zig");
 
+pub const FileItem = struct {
+    path: []const u8,
+    status_name: []const u8,
+};
+
 /// State represents the unified state of the Git repo.
 pub const State = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
     branch_refs: std.ArrayList(Ref),
-    status: *Status,
+    git_status: *Status,
+    staged: std.ArrayList(FileItem),
+    unstaged: std.ArrayList(FileItem),
+    untracked: std.ArrayList(FileItem),
 
     pub fn build(allocator: std.mem.Allocator) !*Self {
         const self = try allocator.create(Self);
@@ -22,12 +30,77 @@ pub const State = struct {
             branch_refs.deinit(allocator);
         }
 
-        const git_status = status(allocator);
+        const git_status = try status(allocator);
         errdefer git_status.deinit();
+
+        var staged = std.ArrayList(FileItem).empty;
+        errdefer staged.deinit(allocator);
+
+        var unstaged = std.ArrayList(FileItem).empty;
+        errdefer unstaged.deinit(allocator);
+
+        var untracked = std.ArrayList(FileItem).empty;
+        errdefer untracked.deinit(allocator);
+
+        for (git_status.files) |file| {
+            switch (file) {
+                .changed => |changed| {
+                    const x_is_staged = changed.xy.x != .unmodified;
+                    const y_is_unstaged = changed.xy.y != .unmodified;
+
+                    if (x_is_staged) {
+                        try staged.append(allocator, .{
+                            .path = changed.path,
+                            .status_name = changed.xy.x.name(),
+                        });
+                    }
+                    if (y_is_unstaged) {
+                        try unstaged.append(allocator, .{
+                            .path = changed.path,
+                            .status_name = changed.xy.y.name(),
+                        });
+                    }
+                },
+                .copied_or_renamed => |copied_or_renamed| {
+                    const x_is_staged = copied_or_renamed.xy.x != .unmodified;
+                    const y_is_unstaged = copied_or_renamed.xy.y != .unmodified;
+
+                    if (x_is_staged) {
+                        try staged.append(allocator, .{
+                            .path = copied_or_renamed.path,
+                            .status_name = copied_or_renamed.xy.x.name(),
+                        });
+                    }
+                    if (y_is_unstaged) {
+                        try unstaged.append(allocator, .{
+                            .path = copied_or_renamed.path,
+                            .status_name = copied_or_renamed.xy.y.name(),
+                        });
+                    }
+                },
+                .unmerged => |unmerged| {
+                    try unstaged.append(allocator, .{
+                        .path = unmerged.path,
+                        .status_name = "unmerged",
+                    });
+                },
+                .untracked_file => |untracked_file| {
+                    try untracked.append(allocator, .{
+                        .path = untracked_file.path,
+                        .status_name = "untracked",
+                    });
+                },
+                .ignored_file => {},
+            }
+        }
+
         self.* = .{
             .allocator = allocator,
             .branch_refs = branch_refs,
-            .status = git_status,
+            .git_status = git_status,
+            .staged = staged,
+            .unstaged = unstaged,
+            .untracked = untracked,
         };
         return self;
     }
@@ -37,7 +110,10 @@ pub const State = struct {
             branch_ref.deinit(self.allocator);
         }
         self.branch_refs.deinit(self.allocator);
-        self.status.deinit();
+        self.git_status.deinit();
+        self.staged.deinit(self.allocator);
+        self.unstaged.deinit(self.allocator);
+        self.untracked.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 };
@@ -64,7 +140,7 @@ pub fn branch(allocator: std.mem.Allocator) !std.ArrayList(Ref) {
         &[_][]const u8{
             "git",
             "branch",
-            "--format=%(if)%(HEAD)%(then)+%(else)-%(end) %(objectname) %(refname) %(contents:subject) %(upstream)",
+            "--format=%(if)%(HEAD)%(then)+%(else)-%(end)\t%(objectname)\t%(refname)\t%(contents:subject)\t%(upstream)",
         },
         allocator,
     );
@@ -81,7 +157,7 @@ pub fn branch(allocator: std.mem.Allocator) !std.ArrayList(Ref) {
             continue;
         }
 
-        var segments = std.mem.splitScalar(u8, line, ' ');
+        var segments = std.mem.splitScalar(u8, line, '\t');
 
         const head_marker = segments.next().?;
         const objectname = segments.next().?;
