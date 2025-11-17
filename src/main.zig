@@ -688,7 +688,16 @@ pub const InputState = struct {
 
         try options_filtered_sorted.resize(self.allocator, 0);
         for (self.options) |option| {
-            if (match.matches(option, self.contents.items)) {
+            var segments = std.mem.splitAny(u8, self.contents.items, " ");
+            const matches = blk: {
+                while (segments.next()) |segment| {
+                    if (!match.matches(option, segment)) {
+                        break :blk false;
+                    }
+                }
+                break :blk true;
+            };
+            if (matches) {
                 try options_filtered_sorted.append(self.allocator, option);
             }
         }
