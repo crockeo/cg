@@ -516,7 +516,7 @@ pub const InputState = struct {
         const options = self.curr_options();
 
         const total_width = @max(50, self.contents.items.len);
-        const total_height = 1 + options.len;
+        const total_height = 1 + self.options.len;
 
         const center_row = ctx.term_height / 2 - total_height / 2;
         const center_col = if (ctx.term_width > total_width) (ctx.term_width - total_width) / 2 else 0;
@@ -532,7 +532,7 @@ pub const InputState = struct {
             center_row - 1,
             center_col - 2,
             total_width + 4,
-            3 + options.len,
+            3 + self.options.len,
         );
         try term.go_to_pos(&writer.interface, center_row, center_col);
 
