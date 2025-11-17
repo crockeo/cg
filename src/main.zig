@@ -15,6 +15,7 @@ const Event = union(enum) {
 };
 
 const Job = union(enum) {
+    checkout: []const u8,
     push: struct {
         remote: []const u8,
         branch: []const u8,
@@ -117,7 +118,7 @@ pub const BaseState = struct {
 
         try self.input_map.add(&[_]input.Input{.{ .key = .Up }}, Self.arrow_up_handler);
         try self.input_map.add(&[_]input.Input{.{ .key = .Down }}, Self.arrow_down_handler);
-        try self.input_map.add(&[_]input.Input{.{ .key = .B }}, Self.branch_handler);
+        try self.input_map.add(&[_]input.Input{.{ .key = .B }}, Self.branch_handler_start);
         try self.input_map.add(&[_]input.Input{ .{ .key = .C }, .{ .key = .C } }, Self.commit_handler);
         try self.input_map.add(&[_]input.Input{.{ .key = .P }}, Self.push_handler);
         try self.input_map.add(&[_]input.Input{.{ .key = .S }}, Self.stage_handler);
@@ -275,7 +276,7 @@ pub const BaseState = struct {
         return .stop;
     }
 
-    fn branch_handler(self: *Self) !State.Result {
+    fn branch_handler_start(self: *Self) !State.Result {
         var refs = try git.branch(self.allocator);
         defer {
             for (refs.items) |ref| {
@@ -294,8 +295,18 @@ pub const BaseState = struct {
         }
         defer self.allocator.free(options);
 
-        const input_state = try InputState.init(self.allocator, options);
+        const input_state = try InputState.init(
+            self.allocator,
+            options,
+            self,
+            Self.branch_handler_end,
+        );
         return .{ .push = input_state.as_state() };
+    }
+
+    fn branch_handler_end(raw_self: *anyopaque, branch_name: []const u8) !void {
+        const self: *Self = @ptrCast(@alignCast(raw_self));
+        try self.job_queue.put(.{ .checkout = branch_name });
     }
 
     fn commit_handler(self: *Self) !State.Result {
@@ -463,12 +474,19 @@ pub const InputState = struct {
     };
 
     allocator: std.mem.Allocator,
+    complete: *const fn (*anyopaque, []const u8) err.Error!void,
+    complete_ctx: *anyopaque,
     contents: std.ArrayList(u8),
     options: [][]const u8,
     options_filtered_sorted: ?std.ArrayList([]const u8),
     pos: usize,
 
-    pub fn init(allocator: std.mem.Allocator, options: []const []const u8) err.Error!*Self {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        options: []const []const u8,
+        complete_ctx: *anyopaque,
+        complete: *const fn (*anyopaque, []const u8) err.Error!void,
+    ) err.Error!*Self {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
 
@@ -481,6 +499,8 @@ pub const InputState = struct {
 
         self.* = .{
             .allocator = allocator,
+            .complete = complete,
+            .complete_ctx = complete_ctx,
             .contents = .empty,
             .options = options_dupe,
             .options_filtered_sorted = null,
@@ -567,8 +587,7 @@ pub const InputState = struct {
                     return .pop;
                 }
                 if (input_evt.eql(.{ .key = .Enter })) {
-                    // TODO: somehow call a callback
-                    // to give the current `contents` to something.
+                    try self.complete(self.complete_ctx, try self.contents.toOwnedSlice(self.allocator));
                     return .pop;
                 }
 
@@ -847,6 +866,12 @@ const App = struct {
         while (true) {
             const job = self.job_queue.get();
             switch (job) {
+                .checkout => |branch_name| {
+                    git.checkout(self.allocator, branch_name) catch {
+                        @panic("job_thread_main failed to checkout");
+                    };
+                    self.allocator.free(branch_name);
+                },
                 .push => |push_info| {
                     git.push(self.allocator, push_info.remote, push_info.branch) catch {
                         @panic("job_thread_main failed to push");
