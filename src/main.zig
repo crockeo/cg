@@ -331,6 +331,7 @@ pub const BaseState = struct {
 
         const input_state = try InputState.init(
             self.allocator,
+            "Branch",
             options,
             self,
             Self.branch_handler_end,
@@ -378,6 +379,7 @@ pub const BaseState = struct {
 
         const input_state = try InputState.init(
             self.allocator,
+            "Base Branch",
             options,
             ctx,
             Self.branch_create_tip_branch,
@@ -391,6 +393,7 @@ pub const BaseState = struct {
 
         const input_state = try InputState.init(
             ctx.self.allocator,
+            "Tip Branch",
             &[_][]const u8{},
             raw_ctx,
             Self.branch_create_end,
@@ -562,9 +565,11 @@ pub const InputState = struct {
     options: [][]const u8,
     options_filtered_sorted: ?std.ArrayList([]const u8),
     pos: usize,
+    title: ?[]const u8,
 
     pub fn init(
         allocator: std.mem.Allocator,
+        title: ?[]const u8,
         options: []const []const u8,
         complete_ctx: *anyopaque,
         complete: *const fn (*anyopaque, []const u8) err.Error!State.Result,
@@ -572,7 +577,20 @@ pub const InputState = struct {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
 
+        const title_dupe = blk: {
+            if (title) |confirmed_title| {
+                break :blk try allocator.dupe(u8, confirmed_title);
+            }
+            break :blk null;
+        };
+        errdefer {
+            if (title_dupe) |confirmed_title_dupe| {
+                allocator.free(confirmed_title_dupe);
+            }
+        }
+
         var options_dupe = try allocator.alloc([]const u8, options.len);
+        errdefer allocator.free(options_dupe);
         for (0.., options) |i, option| {
             const dupe = try allocator.dupe(u8, option);
             errdefer allocator.free(dupe);
@@ -587,6 +605,7 @@ pub const InputState = struct {
             .options = options_dupe,
             .options_filtered_sorted = null,
             .pos = 0,
+            .title = title_dupe,
         };
         return self;
     }
@@ -607,6 +626,9 @@ pub const InputState = struct {
         self.allocator.free(self.options);
         if (self.options_filtered_sorted) |*options_filtered_sorted| {
             options_filtered_sorted.deinit(self.allocator);
+        }
+        if (self.title) |title| {
+            self.allocator.free(title);
         }
         self.allocator.destroy(self);
     }
@@ -630,7 +652,7 @@ pub const InputState = struct {
         // (like we do for the BaseState)
         try ui.paint_box(
             &writer.interface,
-            "Branch",
+            self.title,
             center_row - 1,
             center_col - 2,
             total_width + 4,
