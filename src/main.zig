@@ -122,6 +122,7 @@ pub const BaseState = struct {
         try self.input_map.add(&[_]input.Input{.{ .key = .Up }}, Self.arrow_up_handler);
         try self.input_map.add(&[_]input.Input{.{ .key = .Down }}, Self.arrow_down_handler);
         try self.input_map.add(&[_]input.Input{ .{ .key = .B }, .{ .key = .B } }, Self.branch_handler_start);
+        try self.input_map.add(&[_]input.Input{ .{ .key = .B }, .{ .key = .C } }, Self.branch_create_base_branch);
         try self.input_map.add(&[_]input.Input{ .{ .key = .C }, .{ .key = .C } }, Self.commit_handler);
         try self.input_map.add(&[_]input.Input{.{ .key = .P }}, Self.push_handler);
         try self.input_map.add(&[_]input.Input{.{ .key = .S }}, Self.stage_handler);
@@ -281,6 +282,34 @@ pub const BaseState = struct {
         return .stop;
     }
 
+    fn toggle_expand_handler(self: *Self) !State.Result {
+        switch (self.user_state.section) {
+            .untracked => {
+                self.user_state.untracked_expanded = !self.user_state.untracked_expanded;
+                if (!self.user_state.untracked_expanded) {
+                    self.user_state.pos = 0;
+                }
+            },
+            .unstaged => {
+                self.user_state.unstaged_expanded = !self.user_state.unstaged_expanded;
+                if (!self.user_state.unstaged_expanded) {
+                    self.user_state.pos = 0;
+                }
+            },
+            .staged => {
+                self.user_state.staged_expanded = !self.user_state.staged_expanded;
+                if (!self.user_state.staged_expanded) {
+                    self.user_state.pos = 0;
+                }
+            },
+            else => {},
+        }
+        return .stop;
+    }
+
+    //////////////////
+    // git checkout //
+    //////////////////
     fn branch_handler_start(self: *Self) !State.Result {
         var refs = try git.branch(self.allocator);
         defer {
@@ -315,6 +344,69 @@ pub const BaseState = struct {
         return .pop;
     }
 
+    /////////////////////
+    // git checkout -b //
+    /////////////////////
+    const BranchCreateContext = struct {
+        // TODO: I need to figure out a way to dealloc base_branch
+        // in the case that someone cancels either of the InputStates below.
+        self: *Self,
+        base_branch: ?[]const u8,
+    };
+
+    fn branch_create_base_branch(self: *Self) !State.Result {
+        var refs = try git.branch(self.allocator);
+        defer {
+            for (refs.items) |ref| {
+                ref.deinit(self.allocator);
+            }
+            refs.deinit(self.allocator);
+        }
+
+        var options = try self.allocator.alloc([]const u8, refs.items.len);
+        for (0.., refs.items) |i, ref| {
+            if (std.mem.startsWith(u8, ref.refname, "refs/heads/")) {
+                options[i] = ref.refname["refs/heads/".len..];
+            } else {
+                options[i] = ref.refname;
+            }
+        }
+        defer self.allocator.free(options);
+
+        const ctx = try self.allocator.create(BranchCreateContext);
+        ctx.* = .{ .self = self, .base_branch = null };
+
+        const input_state = try InputState.init(
+            self.allocator,
+            options,
+            ctx,
+            Self.branch_create_tip_branch,
+        );
+        return .{ .push = input_state.as_state() };
+    }
+
+    fn branch_create_tip_branch(raw_ctx: *anyopaque, base_branch: []const u8) !State.Result {
+        var ctx: *BranchCreateContext = @ptrCast(@alignCast(raw_ctx));
+        ctx.base_branch = base_branch;
+
+        const input_state = try InputState.init(
+            ctx.self.allocator,
+            &[_][]const u8{},
+            raw_ctx,
+            Self.branch_create_end,
+        );
+        return .{ .replace = input_state.as_state() };
+    }
+
+    fn branch_create_end(raw_ctx: *anyopaque, tip_branch: []const u8) !State.Result {
+        _ = raw_ctx;
+        _ = tip_branch;
+        return .pop;
+    }
+
+    ////////////////
+    // git commit //
+    ////////////////
     fn commit_handler(self: *Self) !State.Result {
         // TODO: error handling from event handlers
 
@@ -328,6 +420,9 @@ pub const BaseState = struct {
         return .stop;
     }
 
+    //////////////
+    // git push //
+    //////////////
     fn push_handler(self: *Self) !State.Result {
         // TODO: make it so we can push to other places.
         try self.job_queue.put(.{
@@ -339,6 +434,9 @@ pub const BaseState = struct {
         return .stop;
     }
 
+    /////////////
+    // git add //
+    /////////////
     fn stage_handler(self: *Self) !State.Result {
         if (self.user_state.section != .untracked and self.user_state.section != .unstaged) {
             return .stop;
@@ -389,31 +487,9 @@ pub const BaseState = struct {
         return .stop;
     }
 
-    fn toggle_expand_handler(self: *Self) !State.Result {
-        switch (self.user_state.section) {
-            .untracked => {
-                self.user_state.untracked_expanded = !self.user_state.untracked_expanded;
-                if (!self.user_state.untracked_expanded) {
-                    self.user_state.pos = 0;
-                }
-            },
-            .unstaged => {
-                self.user_state.unstaged_expanded = !self.user_state.unstaged_expanded;
-                if (!self.user_state.unstaged_expanded) {
-                    self.user_state.pos = 0;
-                }
-            },
-            .staged => {
-                self.user_state.staged_expanded = !self.user_state.staged_expanded;
-                if (!self.user_state.staged_expanded) {
-                    self.user_state.pos = 0;
-                }
-            },
-            else => {},
-        }
-        return .stop;
-    }
-
+    ////////////////////
+    // git reset HEAD //
+    ////////////////////
     fn unstage_handler(self: *Self) !State.Result {
         if (self.user_state.section != .staged) {
             return .stop;
