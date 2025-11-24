@@ -222,6 +222,51 @@ pub const Input = struct {
 
         return .{ .key = .Unknown, .modifiers = .{} };
     }
+
+    pub fn char(self: Input) ?u8 {
+        switch (self.key) {
+            .A => return if (self.modifiers.shift) 'A' else 'a',
+            .B => return if (self.modifiers.shift) 'B' else 'b',
+            .C => return if (self.modifiers.shift) 'C' else 'c',
+            .D => return if (self.modifiers.shift) 'D' else 'd',
+            .E => return if (self.modifiers.shift) 'E' else 'e',
+            .F => return if (self.modifiers.shift) 'F' else 'f',
+            .G => return if (self.modifiers.shift) 'G' else 'g',
+            .H => return if (self.modifiers.shift) 'H' else 'h',
+            .I => return if (self.modifiers.shift) 'I' else 'i',
+            .J => return if (self.modifiers.shift) 'J' else 'j',
+            .K => return if (self.modifiers.shift) 'K' else 'k',
+            .L => return if (self.modifiers.shift) 'L' else 'l',
+            .M => return if (self.modifiers.shift) 'M' else 'm',
+            .N => return if (self.modifiers.shift) 'N' else 'n',
+            .O => return if (self.modifiers.shift) 'O' else 'o',
+            .P => return if (self.modifiers.shift) 'P' else 'p',
+            .Q => return if (self.modifiers.shift) 'Q' else 'q',
+            .R => return if (self.modifiers.shift) 'R' else 'r',
+            .S => return if (self.modifiers.shift) 'S' else 's',
+            .T => return if (self.modifiers.shift) 'T' else 't',
+            .U => return if (self.modifiers.shift) 'U' else 'u',
+            .V => return if (self.modifiers.shift) 'V' else 'v',
+            .W => return if (self.modifiers.shift) 'W' else 'w',
+            .X => return if (self.modifiers.shift) 'X' else 'x',
+            .Y => return if (self.modifiers.shift) 'Y' else 'y',
+            .Z => return if (self.modifiers.shift) 'Z' else 'z',
+            .Slash => return '/',
+            .Dash => return '-',
+            .Zero => return '0',
+            .One => return '1',
+            .Two => return '2',
+            .Three => return '3',
+            .Four => return '4',
+            .Five => return '5',
+            .Six => return '6',
+            .Seven => return '7',
+            .Eight => return '8',
+            .Nine => return '9',
+            .Space => return ' ',
+            else => return null,
+        }
+    }
 };
 
 pub const Key = enum {

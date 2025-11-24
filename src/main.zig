@@ -587,116 +587,71 @@ pub const InputState = struct {
         const self: *Self = @ptrCast(@alignCast(state.context));
         _ = ctx;
 
-        switch (event) {
-            .input => |input_evt| {
-                if (input_evt.eql(.{ .key = .Escape })) {
-                    return .pop;
-                }
-                if (input_evt.eql(.{ .key = .Enter })) {
-                    return try self.complete(
-                        self.complete_ctx,
-                        try self.contents.toOwnedSlice(self.allocator),
-                    );
-                }
-
-                if (input_evt.eql(.{ .key = .Backspace })) {
-                    if (self.contents.items.len > 0) {
-                        _ = self.contents.pop();
-                    }
-                    try self.filter_and_sort();
-                    return .stop;
-                }
-
-                const options = self.curr_options();
-                if (input_evt.eql(.{ .key = .Up })) {
-                    if (self.pos > 0) {
-                        self.pos -= 1;
-                    }
-                    if (self.pos > 0) {
-                        try self.contents.resize(
-                            self.allocator,
-                            options[self.pos - 1].len,
-                        );
-                        std.mem.copyForwards(
-                            u8,
-                            self.contents.items,
-                            options[self.pos - 1],
-                        );
-                    }
-                    return .stop;
-                }
-                if (input_evt.eql(.{ .key = .Down })) {
-                    self.pos = @min(options.len, self.pos + 1);
-                    if (self.pos > 0) {
-                        try self.contents.resize(
-                            self.allocator,
-                            options[self.pos - 1].len,
-                        );
-                        std.mem.copyForwards(
-                            u8,
-                            self.contents.items,
-                            options[self.pos - 1],
-                        );
-                    }
-                    return .stop;
-                }
-
-                // Handle printable characters
-                const char: ?u8 = switch (input_evt.key) {
-                    .A => if (input_evt.modifiers.shift) 'A' else 'a',
-                    .B => if (input_evt.modifiers.shift) 'B' else 'b',
-                    .C => if (input_evt.modifiers.shift) 'C' else 'c',
-                    .D => if (input_evt.modifiers.shift) 'D' else 'd',
-                    .E => if (input_evt.modifiers.shift) 'E' else 'e',
-                    .F => if (input_evt.modifiers.shift) 'F' else 'f',
-                    .G => if (input_evt.modifiers.shift) 'G' else 'g',
-                    .H => if (input_evt.modifiers.shift) 'H' else 'h',
-                    .I => if (input_evt.modifiers.shift) 'I' else 'i',
-                    .J => if (input_evt.modifiers.shift) 'J' else 'j',
-                    .K => if (input_evt.modifiers.shift) 'K' else 'k',
-                    .L => if (input_evt.modifiers.shift) 'L' else 'l',
-                    .M => if (input_evt.modifiers.shift) 'M' else 'm',
-                    .N => if (input_evt.modifiers.shift) 'N' else 'n',
-                    .O => if (input_evt.modifiers.shift) 'O' else 'o',
-                    .P => if (input_evt.modifiers.shift) 'P' else 'p',
-                    .Q => if (input_evt.modifiers.shift) 'Q' else 'q',
-                    .R => if (input_evt.modifiers.shift) 'R' else 'r',
-                    .S => if (input_evt.modifiers.shift) 'S' else 's',
-                    .T => if (input_evt.modifiers.shift) 'T' else 't',
-                    .U => if (input_evt.modifiers.shift) 'U' else 'u',
-                    .V => if (input_evt.modifiers.shift) 'V' else 'v',
-                    .W => if (input_evt.modifiers.shift) 'W' else 'w',
-                    .X => if (input_evt.modifiers.shift) 'X' else 'x',
-                    .Y => if (input_evt.modifiers.shift) 'Y' else 'y',
-                    .Z => if (input_evt.modifiers.shift) 'Z' else 'z',
-                    .Slash => '/',
-                    .Dash => '-',
-                    .Zero => '0',
-                    .One => '1',
-                    .Two => '2',
-                    .Three => '3',
-                    .Four => '4',
-                    .Five => '5',
-                    .Six => '6',
-                    .Seven => '7',
-                    .Eight => '8',
-                    .Nine => '9',
-                    .Space => ' ',
-                    else => null,
-                };
-
-                if (char) |c| {
-                    try self.contents.append(self.allocator, c);
-                    try self.filter_and_sort();
-                    self.pos = 0;
-                }
-
-                return .stop;
-            },
-            .git_state => {
-                return .pass;
-            },
+        const input_evt = blk: {
+            switch (event) {
+                .input => |input_evt| break :blk input_evt,
+                else => return .pass,
+            }
+        };
+        if (input_evt.eql(.{ .key = .Escape })) {
+            return .pop;
         }
+        if (input_evt.eql(.{ .key = .Enter })) {
+            return try self.complete(
+                self.complete_ctx,
+                try self.contents.toOwnedSlice(self.allocator),
+            );
+        }
+
+        if (input_evt.eql(.{ .key = .Backspace })) {
+            if (self.contents.items.len > 0) {
+                _ = self.contents.pop();
+            }
+            try self.filter_and_sort();
+            return .stop;
+        }
+
+        const options = self.curr_options();
+        if (input_evt.eql(.{ .key = .Up })) {
+            if (self.pos > 0) {
+                self.pos -= 1;
+            }
+            if (self.pos > 0) {
+                try self.contents.resize(
+                    self.allocator,
+                    options[self.pos - 1].len,
+                );
+                std.mem.copyForwards(
+                    u8,
+                    self.contents.items,
+                    options[self.pos - 1],
+                );
+            }
+            return .stop;
+        }
+        if (input_evt.eql(.{ .key = .Down })) {
+            self.pos = @min(options.len, self.pos + 1);
+            if (self.pos > 0) {
+                try self.contents.resize(
+                    self.allocator,
+                    options[self.pos - 1].len,
+                );
+                std.mem.copyForwards(
+                    u8,
+                    self.contents.items,
+                    options[self.pos - 1],
+                );
+            }
+            return .stop;
+        }
+
+        if (input_evt.char()) |char| {
+            try self.contents.append(self.allocator, char);
+            try self.filter_and_sort();
+            self.pos = 0;
+        }
+
+        return .stop;
     }
 
     fn curr_options(self: *const Self) []const []const u8 {
