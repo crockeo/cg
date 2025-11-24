@@ -121,7 +121,7 @@ pub const BaseState = struct {
 
         try self.input_map.add(&[_]input.Input{.{ .key = .Up }}, Self.arrow_up_handler);
         try self.input_map.add(&[_]input.Input{.{ .key = .Down }}, Self.arrow_down_handler);
-        try self.input_map.add(&[_]input.Input{.{ .key = .B }}, Self.branch_handler_start);
+        try self.input_map.add(&[_]input.Input{ .{ .key = .B }, .{ .key = .B } }, Self.branch_handler_start);
         try self.input_map.add(&[_]input.Input{ .{ .key = .C }, .{ .key = .C } }, Self.commit_handler);
         try self.input_map.add(&[_]input.Input{.{ .key = .P }}, Self.push_handler);
         try self.input_map.add(&[_]input.Input{.{ .key = .S }}, Self.stage_handler);
@@ -172,13 +172,15 @@ pub const BaseState = struct {
                     return .exit;
                 }
 
-                const next_input_map = self.curr_input_map.get(input_evt) orelse {
-                    self.curr_input_map = self.input_map;
-                    return .stop;
-                };
-
-                if (next_input_map.handler) |handler| {
-                    return try handler(self);
+                switch (self.curr_input_map.handle(input_evt)) {
+                    .handler => |handler| {
+                        self.curr_input_map = self.input_map;
+                        return try handler(self);
+                    },
+                    .next => |next| {
+                        self.curr_input_map = next;
+                    },
+                    .reset => self.curr_input_map = self.input_map,
                 }
 
                 return .stop;

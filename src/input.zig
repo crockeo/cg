@@ -7,6 +7,12 @@ pub fn InputMap(comptime T: type, comptime R: type) type {
         const Self = @This();
         const Handler = *const fn (T) err.Error!R;
 
+        const Result = union(enum) {
+            handler: Handler,
+            next: *Self,
+            reset: void,
+        };
+
         allocator: std.mem.Allocator,
         assoc: std.AutoHashMap(Input, *Self),
         handler: ?Handler,
@@ -36,7 +42,7 @@ pub fn InputMap(comptime T: type, comptime R: type) type {
         pub fn add(self: *Self, input_sequence: []const Input, handler: Handler) error{OutOfMemory}!void {
             var curr = self;
             for (input_sequence) |input| {
-                curr = self.get(input) orelse blk: {
+                curr = self.assoc.get(input) orelse blk: {
                     const next = try Self.init(self.allocator);
                     try self.assoc.put(input, next);
                     break :blk next;
@@ -45,8 +51,14 @@ pub fn InputMap(comptime T: type, comptime R: type) type {
             curr.handler = handler;
         }
 
-        pub fn get(self: *Self, input: Input) ?*Self {
-            return self.assoc.get(input);
+        pub fn handle(self: *Self, input: Input) Result {
+            const next = self.assoc.get(input) orelse {
+                return .reset;
+            };
+            if (next.handler) |handler| {
+                return .{ .handler = handler };
+            }
+            return .{ .next = next };
         }
     };
 }
