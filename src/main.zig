@@ -307,9 +307,10 @@ pub const BaseState = struct {
         return .{ .push = input_state.as_state() };
     }
 
-    fn branch_handler_end(raw_self: *anyopaque, branch_name: []const u8) !void {
+    fn branch_handler_end(raw_self: *anyopaque, branch_name: []const u8) !State.Result {
         const self: *Self = @ptrCast(@alignCast(raw_self));
         try self.job_queue.put(.{ .checkout = branch_name });
+        return .pop;
     }
 
     fn commit_handler(self: *Self) !State.Result {
@@ -477,7 +478,7 @@ pub const InputState = struct {
     };
 
     allocator: std.mem.Allocator,
-    complete: *const fn (*anyopaque, []const u8) err.Error!void,
+    complete: *const fn (*anyopaque, []const u8) err.Error!State.Result,
     complete_ctx: *anyopaque,
     contents: std.ArrayList(u8),
     options: [][]const u8,
@@ -488,7 +489,7 @@ pub const InputState = struct {
         allocator: std.mem.Allocator,
         options: []const []const u8,
         complete_ctx: *anyopaque,
-        complete: *const fn (*anyopaque, []const u8) err.Error!void,
+        complete: *const fn (*anyopaque, []const u8) err.Error!State.Result,
     ) err.Error!*Self {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
@@ -590,8 +591,10 @@ pub const InputState = struct {
                     return .pop;
                 }
                 if (input_evt.eql(.{ .key = .Enter })) {
-                    try self.complete(self.complete_ctx, try self.contents.toOwnedSlice(self.allocator));
-                    return .pop;
+                    return try self.complete(
+                        self.complete_ctx,
+                        try self.contents.toOwnedSlice(self.allocator),
+                    );
                 }
 
                 if (input_evt.eql(.{ .key = .Backspace })) {
