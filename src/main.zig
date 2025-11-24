@@ -51,6 +51,9 @@ pub const State = struct {
         /// Used to push a new state onto the stack.
         push: State,
 
+        /// Used to replace the tip of the stack with a new state.
+        replace: State,
+
         /// Used to stop executing handlers.
         stop: void,
     };
@@ -816,6 +819,13 @@ const App = struct {
                     },
                     .push => |state| {
                         try self.states.append(self.allocator, state);
+                    },
+                    .replace => |new_state| {
+                        if (self.states.pop()) |popped_state| {
+                            var state = popped_state;
+                            state.deinit();
+                        }
+                        try self.states.append(self.allocator, new_state);
                     },
                     .stop => {
                         // Intentionally empty, to do nothing
