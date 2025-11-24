@@ -16,6 +16,10 @@ const Event = union(enum) {
 
 const Job = union(enum) {
     checkout: []const u8,
+    create_branch: struct {
+        base_ref: []const u8,
+        branch_name: []const u8,
+    },
     push: struct {
         remote: []const u8,
         branch: []const u8,
@@ -402,8 +406,14 @@ pub const BaseState = struct {
     }
 
     fn branch_create_end(raw_ctx: *anyopaque, tip_branch: []const u8) !State.Result {
-        _ = raw_ctx;
-        _ = tip_branch;
+        var ctx: *BranchCreateContext = @ptrCast(@alignCast(raw_ctx));
+        defer ctx.self.allocator.destroy(ctx);
+
+        const base_branch = ctx.base_branch orelse @panic("Logic error; shouldn't be able to get here without setting base_branch.");
+        try ctx.self.job_queue.put(.{ .create_branch = .{
+            .base_ref = base_branch,
+            .branch_name = tip_branch,
+        } });
         return .pop;
     }
 
@@ -939,6 +949,17 @@ const App = struct {
                         @panic("job_thread_main failed to checkout");
                     };
                     self.allocator.free(branch_name);
+                },
+                .create_branch => |create_branch| {
+                    git.create_branch(
+                        self.allocator,
+                        create_branch.base_ref,
+                        create_branch.branch_name,
+                    ) catch {
+                        @panic("job_thread_main failed to create new branch");
+                    };
+                    self.allocator.free(create_branch.base_ref);
+                    self.allocator.free(create_branch.branch_name);
                 },
                 .push => |push_info| {
                     git.push(self.allocator, push_info.remote, push_info.branch) catch {

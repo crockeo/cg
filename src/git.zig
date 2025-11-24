@@ -190,6 +190,19 @@ pub fn checkout(allocator: std.mem.Allocator, ref: []const u8) !void {
     _ = try child.wait();
 }
 
+pub fn create_branch(
+    allocator: std.mem.Allocator,
+    base_ref: []const u8,
+    branch_name: []const u8,
+) !void {
+    var child = std.process.Child.init(
+        &[_][]const u8{ "git", "checkout", "-b", branch_name, base_ref },
+        allocator,
+    );
+    try child.spawn();
+    _ = try child.wait();
+}
+
 pub fn commit(allocator: std.mem.Allocator) !void {
     var child = std.process.Child.init(
         &[_][]const u8{ "git", "commit" },
