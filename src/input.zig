@@ -42,9 +42,9 @@ pub fn InputMap(comptime T: type, comptime R: type) type {
         pub fn add(self: *Self, input_sequence: []const Input, handler: Handler) error{OutOfMemory}!void {
             var curr = self;
             for (input_sequence) |input| {
-                curr = self.assoc.get(input) orelse blk: {
+                curr = curr.assoc.get(input) orelse blk: {
                     const next = try Self.init(self.allocator);
-                    try self.assoc.put(input, next);
+                    try curr.assoc.put(input, next);
                     break :blk next;
                 };
             }
@@ -61,6 +61,61 @@ pub fn InputMap(comptime T: type, comptime R: type) type {
             return .{ .next = next };
         }
     };
+}
+
+test "InputMap - empty" {
+    var input_map = try InputMap(struct {}, struct {}).init(std.testing.allocator);
+    defer input_map.deinit();
+    try std.testing.expectEqual(.reset, input_map.handle(.{ .key = .A }));
+}
+
+test "InputMap - single_handler" {
+    const T = struct {};
+    var input_map = try InputMap(T, T).init(std.testing.allocator);
+    defer input_map.deinit();
+
+    const handler = struct {
+        fn f(_: T) err.Error!T {
+            return .{};
+        }
+    }.f;
+
+    try input_map.add(&[_]Input{.{ .key = .A }}, handler);
+
+    try std.testing.expectEqual(.reset, input_map.handle(.{ .key = .B }));
+    const result_handler = switch (input_map.handle(.{ .key = .A })) {
+        .handler => |h| h,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expectEqual(handler, result_handler);
+}
+
+test "InputMap - chain" {
+    const T = struct {};
+    var input_map = try InputMap(T, T).init(std.testing.allocator);
+    defer input_map.deinit();
+
+    const handler = struct {
+        fn f(_: T) err.Error!T {
+            return .{};
+        }
+    }.f;
+
+    try input_map.add(&[_]Input{ .{ .key = .A }, .{ .key = .B } }, handler);
+
+    try std.testing.expectEqual(.reset, input_map.handle(.{ .key = .C }));
+
+    const next_map = switch (input_map.handle(.{ .key = .A })) {
+        .next => |n| n,
+        else => return error.TestUnexpectedResult,
+    };
+
+    const result_handler = switch (next_map.handle(.{ .key = .B })) {
+        .handler => |h| h,
+        else => return error.TestUnexpectedResult,
+    };
+
+    try std.testing.expectEqual(handler, result_handler);
 }
 
 pub fn read(stdin: std.fs.File) !Input {

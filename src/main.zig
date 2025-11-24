@@ -951,6 +951,7 @@ pub fn main() !void {
 }
 
 test "ref other tests" {
+    _ = @import("input.zig");
     _ = @import("match.zig");
     _ = @import("utils.zig");
     std.testing.refAllDecls(@This());
